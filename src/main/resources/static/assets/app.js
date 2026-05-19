@@ -99,6 +99,100 @@ function card(label, value) {
   return `<div class="card"><div class="card-label">${label}</div><div class="card-value">${value || "-"}</div></div>`;
 }
 
+const attendanceScannerState = {
+  stream: null,
+  rafId: null,
+  active: false,
+  decodeInFlight: false,
+  lastDecodeAt: 0
+};
+
+function stopAttendanceScanner() {
+  attendanceScannerState.active = false;
+  attendanceScannerState.decodeInFlight = false;
+  attendanceScannerState.lastDecodeAt = 0;
+
+  if (attendanceScannerState.rafId) {
+    cancelAnimationFrame(attendanceScannerState.rafId);
+    attendanceScannerState.rafId = null;
+  }
+
+  if (attendanceScannerState.stream) {
+    attendanceScannerState.stream.getTracks().forEach((track) => track.stop());
+    attendanceScannerState.stream = null;
+  }
+}
+
+async function startAttendanceScanner(videoEl, onDetect) {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error("Camera access is not supported in this browser.");
+  }
+
+  stopAttendanceScanner();
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: "environment" } },
+    audio: false
+  });
+
+  videoEl.srcObject = stream;
+  await videoEl.play();
+
+  attendanceScannerState.stream = stream;
+  attendanceScannerState.active = true;
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+  if (!ctx) {
+    throw new Error("Unable to initialize QR scanner.");
+  }
+
+  const scan = async () => {
+    if (!attendanceScannerState.active) {
+      return;
+    }
+
+    if (videoEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !attendanceScannerState.decodeInFlight) {
+      if (canvas.width !== videoEl.videoWidth || canvas.height !== videoEl.videoHeight) {
+        canvas.width = videoEl.videoWidth;
+        canvas.height = videoEl.videoHeight;
+      }
+
+      const now = Date.now();
+      if (now - attendanceScannerState.lastDecodeAt >= 350) {
+        attendanceScannerState.lastDecodeAt = now;
+        ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+
+        try {
+          attendanceScannerState.decodeInFlight = true;
+
+          const imageData = canvas.toDataURL("image/jpeg", 0.7);
+          const response = await api("/attendance/decode-qr", {
+            method: "POST",
+            body: { imageData }
+          });
+
+          const qrData = String(response?.qrData || "").trim();
+          if (qrData) {
+            stopAttendanceScanner();
+            await onDetect(qrData);
+            return;
+          }
+        } catch (err) {
+          // Ignore decode miss/error and keep scanning.
+        } finally {
+          attendanceScannerState.decodeInFlight = false;
+        }
+      }
+    }
+
+    attendanceScannerState.rafId = requestAnimationFrame(scan);
+  };
+
+  attendanceScannerState.rafId = requestAnimationFrame(scan);
+}
+
 function render() {
   if (!state.session) {
     renderLogin();
@@ -179,6 +273,7 @@ function renderLogin() {
 }
 
 function logout() {
+  stopAttendanceScanner();
   saveSession(null);
   state.activeFeature = "dashboard";
   render();
@@ -227,6 +322,8 @@ function renderShell() {
 }
 
 function renderFeature(feature) {
+  stopAttendanceScanner();
+
   const root = document.getElementById("featureRoot");
   const title = document.getElementById("featureTitle");
   title.textContent = FEATURES[feature] || "Dashboard";
@@ -346,6 +443,9 @@ function renderAttendance(root) {
         <h3>Generate QR (Faculty/Admin)</h3>
         <button id="generateQrBtn">Generate Attendance QR</button>
         <div id="qrNotice"></div>
+        <div id="generatedQrPreview" class="qr-preview">
+          <p>Tap generate to show a new attendance QR.</p>
+        </div>
         <textarea id="generatedQr" rows="3" readonly placeholder="Generated attendance payload appears here"></textarea>
       </div>
     ` : ""}
@@ -353,10 +453,16 @@ function renderAttendance(root) {
     ${canMark ? `
       <div class="panel-lite">
         <h3>Scan QR (Student/Admin)</h3>
+        <div class="actions">
+          <button id="scanQrBtn" type="button">Scan QR</button>
+          <button id="stopScanBtn" type="button" class="ghost" disabled>Stop Camera</button>
+        </div>
+        <video id="scanVideo" class="scan-video" playsinline muted></video>
+        <p class="scan-help">Allow camera permission, point to the admin QR, and attendance will be marked automatically.</p>
         <form id="markAttendanceForm" class="form-grid">
           <label>QR Data</label>
           <textarea name="qrData" required rows="3" placeholder="Paste scanned QR payload"></textarea>
-          <button type="submit">Mark Attendance</button>
+          <button type="submit">Mark Attendance Manually</button>
         </form>
         <div id="markNotice"></div>
       </div>
@@ -367,11 +473,22 @@ function renderAttendance(root) {
     const btn = document.getElementById("generateQrBtn");
     const notice = document.getElementById("qrNotice");
     const out = document.getElementById("generatedQr");
+    const preview = document.getElementById("generatedQrPreview");
 
     btn.addEventListener("click", async () => {
       try {
         const qr = await api("/attendance/generate-qr");
-        out.value = typeof qr === "string" ? qr : JSON.stringify(qr);
+        const qrData = String(qr?.qrData || (typeof qr === "string" ? qr : "")).trim();
+        const qrImageDataUrl = String(qr?.qrImageDataUrl || "").trim();
+
+        out.value = qrData || JSON.stringify(qr);
+
+        if (qrImageDataUrl) {
+          preview.innerHTML = `<img src="${qrImageDataUrl}" alt="Attendance QR code" />`;
+        } else {
+          preview.innerHTML = "<p>QR image is not available.</p>";
+        }
+
         setNotice(notice, "QR generated successfully", "success");
       } catch (err) {
         setNotice(notice, err.message, "error");
@@ -382,12 +499,64 @@ function renderAttendance(root) {
   if (canMark) {
     const form = document.getElementById("markAttendanceForm");
     const notice = document.getElementById("markNotice");
+    const scanBtn = document.getElementById("scanQrBtn");
+    const stopBtn = document.getElementById("stopScanBtn");
+    const video = document.getElementById("scanVideo");
+    const qrDataInput = form.querySelector("textarea[name='qrData']");
+
+    const markAttendanceFromPayload = async (payload) => {
+      const qrData = String(payload || "").trim();
+      if (!qrData) {
+        setNotice(notice, "QR data is empty.", "error");
+        return;
+      }
+
+      const result = await api("/attendance/mark", { method: "POST", body: { qrData } });
+      const message = typeof result === "string" ? result : "Attendance marked";
+      const isSuccess = /success|already marked/i.test(message);
+
+      setNotice(notice, message, isSuccess ? "success" : "error");
+    };
+
+    const resetCameraButtons = () => {
+      scanBtn.disabled = false;
+      stopBtn.disabled = true;
+      video.srcObject = null;
+      video.style.display = "none";
+    };
+
+    scanBtn.addEventListener("click", async () => {
+      try {
+        scanBtn.disabled = true;
+        stopBtn.disabled = false;
+        video.style.display = "block";
+        setNotice(notice, "Camera started. Scanning for QR...", "info");
+
+        await startAttendanceScanner(video, async (decodedValue) => {
+          qrDataInput.value = decodedValue;
+          resetCameraButtons();
+          await markAttendanceFromPayload(decodedValue);
+        });
+      } catch (err) {
+        resetCameraButtons();
+        stopAttendanceScanner();
+        setNotice(notice, err.message || "Unable to start camera scanner.", "error");
+      }
+    });
+
+    stopBtn.addEventListener("click", () => {
+      stopAttendanceScanner();
+      resetCameraButtons();
+      setNotice(notice, "Camera stopped.", "info");
+    });
+
+    resetCameraButtons();
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const payload = String(new FormData(form).get("qrData") || "").trim();
       try {
-        const result = await api("/attendance/mark", { method: "POST", body: { qrData: payload } });
-        setNotice(notice, typeof result === "string" ? result : "Attendance marked", "success");
+        const payload = String(new FormData(form).get("qrData") || "").trim();
+        await markAttendanceFromPayload(payload);
       } catch (err) {
         setNotice(notice, err.message, "error");
       }
@@ -952,7 +1121,10 @@ function renderGym(root) {
     <div class="actions">
       <button id="gymStatusBtn">Check Gym Status</button>
       <button id="gymScanBtn">Scan Gym QR</button>
+      <button id="gymStopScanBtn" class="ghost" disabled>Stop Camera</button>
     </div>
+    <video id="gymScanVideo" class="scan-video" playsinline muted></video>
+    <p class="scan-help">Point the camera to Gym QR. After scan, key status updates automatically.</p>
     ${role === "ADMIN" ? `
       <form id="gymAdminForm" class="form-grid">
         <label>Student ID</label><input name="studentId" required />
@@ -966,6 +1138,16 @@ function renderGym(root) {
 
   const notice = document.getElementById("gymNotice");
   const form = document.getElementById("gymAdminForm");
+  const scanBtn = document.getElementById("gymScanBtn");
+  const stopBtn = document.getElementById("gymStopScanBtn");
+  const video = document.getElementById("gymScanVideo");
+
+  const resetCameraButtons = () => {
+    scanBtn.disabled = false;
+    stopBtn.disabled = true;
+    video.srcObject = null;
+    video.style.display = "none";
+  };
 
   document.getElementById("gymStatusBtn").addEventListener("click", async () => {
     try {
@@ -976,20 +1158,39 @@ function renderGym(root) {
     }
   });
 
-  document.getElementById("gymScanBtn").addEventListener("click", async () => {
+  scanBtn.addEventListener("click", async () => {
     try {
-      let path = "/gym/scan";
-      if (role === "ADMIN" && form) {
-        const fd = new FormData(form);
-        const params = new URLSearchParams(fd);
-        path += `?${params.toString()}`;
-      }
-      const msg = await api(path, { method: "POST" });
-      setNotice(notice, typeof msg === "string" ? msg : "Gym action completed", "success");
+      scanBtn.disabled = true;
+      stopBtn.disabled = false;
+      video.style.display = "block";
+      setNotice(notice, "Camera started. Scanning Gym QR...", "info");
+
+      await startAttendanceScanner(video, async () => {
+        resetCameraButtons();
+
+        let path = "/gym/scan";
+        if (role === "ADMIN" && form) {
+          const fd = new FormData(form);
+          const params = new URLSearchParams(fd);
+          path += `?${params.toString()}`;
+        }
+        const msg = await api(path, { method: "POST" });
+        setNotice(notice, typeof msg === "string" ? msg : "Gym action completed", "success");
+      });
     } catch (err) {
-      setNotice(notice, err.message, "error");
+      resetCameraButtons();
+      stopAttendanceScanner();
+      setNotice(notice, err.message || "Unable to start camera scanner.", "error");
     }
   });
+
+  stopBtn.addEventListener("click", () => {
+    stopAttendanceScanner();
+    resetCameraButtons();
+    setNotice(notice, "Camera stopped.", "info");
+  });
+
+  resetCameraButtons();
 }
 
 function renderIndoor(root) {
@@ -998,7 +1199,10 @@ function renderIndoor(root) {
     <div class="actions">
       <button id="indoorStatusBtn">Check Indoor Court Status</button>
       <button id="indoorScanBtn">Scan Indoor Court QR</button>
+      <button id="indoorStopScanBtn" class="ghost" disabled>Stop Camera</button>
     </div>
+    <video id="indoorScanVideo" class="scan-video" playsinline muted></video>
+    <p class="scan-help">Point the camera to Indoor Court QR. After scan, key status updates automatically.</p>
     ${role === "ADMIN" ? `
       <form id="indoorAdminForm" class="form-grid">
         <label>Student ID</label><input name="studentId" required />
@@ -1012,6 +1216,16 @@ function renderIndoor(root) {
 
   const notice = document.getElementById("indoorNotice");
   const form = document.getElementById("indoorAdminForm");
+  const scanBtn = document.getElementById("indoorScanBtn");
+  const stopBtn = document.getElementById("indoorStopScanBtn");
+  const video = document.getElementById("indoorScanVideo");
+
+  const resetCameraButtons = () => {
+    scanBtn.disabled = false;
+    stopBtn.disabled = true;
+    video.srcObject = null;
+    video.style.display = "none";
+  };
 
   document.getElementById("indoorStatusBtn").addEventListener("click", async () => {
     try {
@@ -1022,20 +1236,39 @@ function renderIndoor(root) {
     }
   });
 
-  document.getElementById("indoorScanBtn").addEventListener("click", async () => {
+  scanBtn.addEventListener("click", async () => {
     try {
-      let path = "/indoor-court/scan";
-      if (role === "ADMIN" && form) {
-        const fd = new FormData(form);
-        const params = new URLSearchParams(fd);
-        path += `?${params.toString()}`;
-      }
-      const msg = await api(path, { method: "POST" });
-      setNotice(notice, typeof msg === "string" ? msg : "Indoor court action completed", "success");
+      scanBtn.disabled = true;
+      stopBtn.disabled = false;
+      video.style.display = "block";
+      setNotice(notice, "Camera started. Scanning Indoor Court QR...", "info");
+
+      await startAttendanceScanner(video, async () => {
+        resetCameraButtons();
+
+        let path = "/indoor-court/scan";
+        if (role === "ADMIN" && form) {
+          const fd = new FormData(form);
+          const params = new URLSearchParams(fd);
+          path += `?${params.toString()}`;
+        }
+        const msg = await api(path, { method: "POST" });
+        setNotice(notice, typeof msg === "string" ? msg : "Indoor court action completed", "success");
+      });
     } catch (err) {
-      setNotice(notice, err.message, "error");
+      resetCameraButtons();
+      stopAttendanceScanner();
+      setNotice(notice, err.message || "Unable to start camera scanner.", "error");
     }
   });
+
+  stopBtn.addEventListener("click", () => {
+    stopAttendanceScanner();
+    resetCameraButtons();
+    setNotice(notice, "Camera stopped.", "info");
+  });
+
+  resetCameraButtons();
 }
 
 render();

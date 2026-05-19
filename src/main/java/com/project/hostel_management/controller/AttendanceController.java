@@ -27,7 +27,7 @@ public class AttendanceController {
 
     // Generate Student QR
     @GetMapping("/generate-qr")
-    public String generateQR() {
+    public Map<String, String> generateQR() {
         if (!securityUtil.hasAnyRole("FACULTY", "ADMIN")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
@@ -35,6 +35,18 @@ public class AttendanceController {
         String inchargeId = securityUtil.getCurrentRegNo();
 
         return service.generateQR(inchargeId);
+    }
+
+    @PostMapping("/decode-qr")
+    public Map<String, String> decodeQr(@RequestBody Map<String, String> body) {
+        if (!securityUtil.hasAnyRole("STUDENT", "ADMIN")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        String imageData = body.get("imageData");
+        String qrData = service.decodeQrFromImageData(imageData);
+
+        return Map.of("qrData", qrData == null ? "" : qrData);
     }
 
     // Mark Attendance

@@ -14,13 +14,16 @@ public class IndoorCourtService {
     @Autowired
     private IndoorCourtRepository repository;
 
-    public String scanIndoorCourtQR(String studentId, String studentName) {
+    public String scanIndoorCourtQR(String studentId,
+                                    String studentName,
+                                    String roomNo,
+                                    String mobileNo) {
 
         Optional<IndoorCourt> activeEntry =
                 repository.findByStudentIdAndStatus(studentId, "ACTIVE");
 
         // RETURNING KEY
-        if(activeEntry.isPresent()) {
+        if (activeEntry.isPresent()) {
 
             IndoorCourt access = activeEntry.get();
 
@@ -37,6 +40,9 @@ public class IndoorCourtService {
 
         access.setStudentId(studentId);
         access.setStudentName(studentName);
+        access.setRoomNo(roomNo);
+        access.setMobileNo(mobileNo);
+
         access.setOpenTime(LocalDateTime.now());
         access.setStatus("ACTIVE");
 
@@ -50,7 +56,7 @@ public class IndoorCourtService {
         Optional<IndoorCourt> activeIndoorCourt =
                 repository.findByStatus("ACTIVE");
 
-        if(activeIndoorCourt.isPresent()) {
+        if (activeIndoorCourt.isPresent()) {
             return "INDOOR COURT OPENED";
         }
 

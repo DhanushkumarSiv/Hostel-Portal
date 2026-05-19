@@ -14,9 +14,11 @@ public class GymAccessController {
 
     @PostMapping("/scan")
     public String scanQR(@RequestParam String studentId,
-                         @RequestParam String studentName) {
+                         @RequestParam String studentName,
+                         @RequestParam String roomNo,
+                         @RequestParam String mobileNo) {
 
-        return service.scanGymQR(studentId, studentName);
+        return service.scanGymQR(studentId, studentName, roomNo, mobileNo);
     }
 
     @GetMapping("/status")

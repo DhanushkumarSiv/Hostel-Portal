@@ -39,13 +39,10 @@ public class AttendanceService {
             // Split QR Data
             String[] parts = qrData.split("\\|");
 
-            String qrStudentId = parts[0];
-            String qrDate = parts[1];
-
-            // Validate Student
-            if(!loggedInStudentId.equals(qrStudentId)) {
+            if (parts.length < 3 || !"ATTENDANCE".equals(parts[0])) {
                 return "Invalid Student QR";
             }
+            String qrDate = parts[1];
 
             // Validate Date
             if(!qrDate.equals(LocalDate.now().toString())) {
@@ -53,7 +50,10 @@ public class AttendanceService {
             }
 
             // Validate Hostel WiFi
-            if(!ipAddress.startsWith("192.168")) {
+            if(!(ipAddress.startsWith("192.168")
+                    || "127.0.0.1".equals(ipAddress)
+                    || "0:0:0:0:0:0:0:1".equals(ipAddress)
+                    || "::1".equals(ipAddress))) {
                 return "Connect to Hostel WiFi";
             }
 

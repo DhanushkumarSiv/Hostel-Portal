@@ -4,13 +4,11 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Service;
 
-import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
-import java.security.NoSuchAlgorithmException;
-import java.util.Base64;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -20,27 +18,21 @@ import java.util.function.Function;
 public class JWTService {
 
 
-    private String secretkey = "";
+    private final String secretkey;
 
-    public JWTService() {
-
-        try {
-            KeyGenerator keyGen = KeyGenerator.getInstance("HmacSHA256");
-            SecretKey sk = keyGen.generateKey();
-            secretkey = Base64.getEncoder().encodeToString(sk.getEncoded());
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);
-        }
+    public JWTService(@Value("${app.jwt.secret:QWRtaW5Ib3N0ZWxNYW5hZ2VtZW50U2VjdXJlS2V5VG9LZWVwVG9rZW5zU3RhYmxl}") String secretkey) {
+        this.secretkey = secretkey;
     }
 
-    public String generateToken(String username) {
+    public String generateToken(String username, String role) {
         Map<String, Object> claims = new HashMap<>();
+        claims.put("role", role);
         return Jwts.builder()
                 .claims()
                 .add(claims)
                 .subject(username)
                 .issuedAt(new Date(System.currentTimeMillis()))
-                .expiration(new Date(System.currentTimeMillis() + 60 * 60 * 30))
+                .expiration(new Date(System.currentTimeMillis() + 1000L * 60 * 60 * 12))
                 .and()
                 .signWith(getKey())
                 .compact();
@@ -55,6 +47,10 @@ public class JWTService {
     public String extractUserName(String token) {
         // extract the username from jwt token
         return extractClaim(token, Claims::getSubject);
+    }
+
+    public String extractRole(String token) {
+        return extractClaim(token, claims -> claims.get("role", String.class));
     }
 
     private <T> T extractClaim(String token, Function<Claims, T> claimResolver) {

@@ -1,5 +1,7 @@
 package com.project.hostel_management.controller;
 
+import com.project.hostel_management.dto.LoginRequest;
+import com.project.hostel_management.dto.LoginResponse;
 import com.project.hostel_management.model.Users;
 import com.project.hostel_management.service.UserService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,8 +23,8 @@ public class UserController {
     }
 
     @PostMapping("/login")
-    public String login(@RequestBody Users user) {
+    public LoginResponse login(@RequestBody LoginRequest request) {
 
-        return service.verify(user);
+        return service.verify(request);
     }
 }

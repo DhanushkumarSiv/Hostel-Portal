@@ -6,6 +6,7 @@ import org.springframework.security.core.userdetails.UserDetails;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Locale;
 
 public class UserPrincipal implements UserDetails {
 
@@ -17,7 +18,8 @@ public class UserPrincipal implements UserDetails {
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
-        return Collections.singleton(new SimpleGrantedAuthority("USER"));
+        String role = normalizeRole(user.getRole());
+        return Collections.singleton(new SimpleGrantedAuthority("ROLE_" + role));
     }
 
     @Override
@@ -27,7 +29,7 @@ public class UserPrincipal implements UserDetails {
 
     @Override
     public String getUsername() {
-        return user.getUsername();
+        return user.getRegNo();
     }
 
     @Override
@@ -48,5 +50,18 @@ public class UserPrincipal implements UserDetails {
     @Override
     public boolean isEnabled() {
         return true;
+    }
+
+    private String normalizeRole(String role) {
+        if (role == null || role.isBlank()) {
+            return "STUDENT";
+        }
+
+        String normalized = role.trim().toUpperCase(Locale.ROOT);
+        while (normalized.startsWith("ROLE_")) {
+            normalized = normalized.substring(5);
+        }
+
+        return normalized.isBlank() ? "STUDENT" : normalized;
     }
 }

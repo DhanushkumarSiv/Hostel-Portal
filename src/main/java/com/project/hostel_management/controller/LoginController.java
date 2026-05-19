@@ -7,7 +7,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @CrossOrigin("*")
 public class LoginController {
-    @GetMapping("/")
+    @GetMapping("/api/health")
     public String home() {
         return "API is running. ";
     }

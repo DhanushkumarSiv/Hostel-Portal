@@ -1,10 +1,13 @@
 package com.project.hostel_management.controller;
 
 import com.project.hostel_management.service.AttendanceService;
+import com.project.hostel_management.service.SecurityUtil;
+import com.project.hostel_management.service.StudentService;
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpSession;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Map;
 
@@ -16,17 +19,20 @@ public class AttendanceController {
     @Autowired
     private AttendanceService service;
 
+    @Autowired
+    private SecurityUtil securityUtil;
+
+    @Autowired
+    private StudentService studentService;
+
     // Generate Student QR
     @GetMapping("/generate-qr")
-    public String generateQR(HttpSession session) {
-
-        String role = (String) session.getAttribute("role");
-
-        if (!"FLOOR_INCHARGE".equals(role)) {
-            return "Access Denied";
+    public String generateQR() {
+        if (!securityUtil.hasAnyRole("FACULTY", "ADMIN")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
 
-        String inchargeId = (String) session.getAttribute("userId");
+        String inchargeId = securityUtil.getCurrentRegNo();
 
         return service.generateQR(inchargeId);
     }
@@ -35,28 +41,25 @@ public class AttendanceController {
     @PostMapping("/mark")
     public String markAttendance(
             @RequestBody Map<String, String> body,
-            HttpSession session,
             HttpServletRequest request
     ) {
+        if (!securityUtil.hasAnyRole("STUDENT", "ADMIN")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
 
         String qrData = body.get("qrData");
+        String regNo = securityUtil.getCurrentRegNo();
 
-        String studentId =
-                (String) session.getAttribute("studentId");
-
-        String studentName =
-                (String) session.getAttribute("studentName");
-
-        String roomNumber =
-                (String) session.getAttribute("roomNumber");
+        var student = studentService.getStudentByRegNo(regNo)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student profile not found"));
 
         String ipAddress = request.getRemoteAddr();
 
         return service.markAttendance(
                 qrData,
-                studentId,
-                studentName,
-                roomNumber,
+                student.getRegNo(),
+                student.getName(),
+                student.getRoomNo(),
                 ipAddress
         );
     }

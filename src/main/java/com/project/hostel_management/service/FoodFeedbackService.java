@@ -10,7 +10,6 @@ import org.springframework.web.multipart.MultipartFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-
 import java.util.List;
 
 @Service
@@ -22,54 +21,33 @@ public class FoodFeedbackService {
     @Autowired
     private StudentRepository studentRepo;
 
-    public FoodFeedback submitFeedback(int rating, String message, MultipartFile image) {
+    public FoodFeedback submitFeedback(int rating, String message, MultipartFile image, String regNo) {
 
-        try{
-            // 📁 Upload folder path
+        try {
             String uploadDir = "uploads/feedback-images/";
-
-            // 📄 Image file name
             String fileName = image.getOriginalFilename();
 
-            // 📂 Full file path
             Path path = Paths.get(uploadDir + fileName);
-
-            // 📁 Create folders if not exist
             Files.createDirectories(path.getParent());
-
-            // 💾 Save image to folder
             Files.write(path, image.getBytes());
 
-            // 🧾 Create feedback object
+            var student = studentRepo.findByRegNo(regNo)
+                    .orElseThrow(() -> new RuntimeException("Student not found for regNo: " + regNo));
+
             FoodFeedback feedback = new FoodFeedback();
-
             feedback.setRating(rating);
-
             feedback.setMessage(message);
-
-            // 🖼️ Save image name in DB
             feedback.setImageName(fileName);
+            feedback.setRegNo(student.getRegNo());
+            feedback.setStudentName(student.getName());
 
-            // 👨‍🎓 Temporary hardcoded student details
-            // Later replace using JWT logged-in user
-            feedback.setRegNo("24901013");
-
-            feedback.setStudentName("Dhanush");
-
-            // 💾 Save feedback to database
             return feedbackRepo.save(feedback);
-        }
-
-        catch (Exception e) {
-
-            throw new RuntimeException(
-                    "Failed to upload image: " + e.getMessage()
-            );
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to upload image: " + e.getMessage());
         }
     }
 
     public List<FoodFeedback> getAllFeedback() {
         return feedbackRepo.findAll();
     }
-
 }

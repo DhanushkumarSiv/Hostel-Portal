@@ -24,7 +24,10 @@ const state = {
   activeFeature: "dashboard"
 };
 
-const app = document.getElementById("app");
+const appRoot = document.getElementById("app");
+const { useEffect, useMemo, useState } = React;
+const DEFAULT_PROFILE_ICON =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'%3E%3Ccircle cx='80' cy='80' r='80' fill='%23e7ecf2'/%3E%3Ccircle cx='80' cy='62' r='27' fill='%23bec8d3'/%3E%3Cpath d='M30 138c6-28 26-42 50-42s44 14 50 42' fill='%23bec8d3'/%3E%3C/svg%3E";
 
 function loadSession() {
   try {
@@ -97,6 +100,10 @@ function roleBadge(role) {
 
 function card(label, value) {
   return `<div class="card"><div class="card-label">${label}</div><div class="card-value">${value || "-"}</div></div>`;
+}
+
+function profileLine(label, value) {
+  return `<div class="profile-line"><span>${label}</span><strong>${value || "-"}</strong></div>`;
 }
 
 const attendanceScannerState = {
@@ -193,52 +200,68 @@ async function startAttendanceScanner(videoEl, onDetect) {
   attendanceScannerState.rafId = requestAnimationFrame(scan);
 }
 
-function render() {
-  if (!state.session) {
-    renderLogin();
-    return;
+async function loginUser(body) {
+  const res = await api("/login", { method: "POST", body });
+  const session = {
+    token: res.token || res,
+    regNo: res.regNo || body.regNo,
+    role: (res.role || body.role || "STUDENT").toUpperCase(),
+    student: res.student || null
+  };
+
+  if (session.role === "STUDENT" && !session.student) {
+    session.student = await api("/students/me", {
+      headers: {
+        Authorization: `Bearer ${session.token}`
+      }
+    });
   }
-  renderShell();
-  renderFeature(state.activeFeature);
+
+  return session;
 }
 
-function renderLogin() {
-  app.innerHTML = `
-    <div class="page-bg">
-      <div class="login-wrap">
-        <div class="brand-block">
-          <p class="eyebrow">Hostel Management</p>
-          <h1>Role Based Access Portal</h1>
-          <p>Select your role, enter your credentials, and continue to your dashboard.</p>
-        </div>
-        <form id="loginForm" class="panel login-panel">
-          <h2>Login</h2>
-          <label>Role</label>
-          <select name="role" required>
-            <option value="STUDENT">Student</option>
-            <option value="FACULTY">Faculty</option>
-            <option value="ADMIN">Admin</option>
-          </select>
+function App() {
+  const [session, setSession] = useState(state.session);
+  const [activeFeature, setActiveFeature] = useState(state.activeFeature);
+  const [notice, setNoticeState] = useState({ message: "", kind: "info" });
+  const [menuOpen, setMenuOpen] = useState(false);
 
-          <label>Register Number</label>
-          <input name="regNo" type="text" required placeholder="Enter regNo" />
+  const allowedFeatures = useMemo(() => {
+    if (!session) return [];
+    return ROLE_FEATURES[session.role] || ROLE_FEATURES.STUDENT;
+  }, [session]);
 
-          <label>Password</label>
-          <input name="password" type="password" required placeholder="Enter password" />
+  useEffect(() => {
+    state.session = session;
+    state.activeFeature = activeFeature;
+  }, [session, activeFeature]);
 
-          <button type="submit">Login</button>
-          <div id="loginNotice"></div>
-        </form>
-      </div>
-    </div>
-  `;
+  useEffect(() => {
+    if (!session) {
+      stopAttendanceScanner();
+      return;
+    }
 
-  const form = document.getElementById("loginForm");
-  const notice = document.getElementById("loginNotice");
+    if (!allowedFeatures.includes(activeFeature)) {
+      setActiveFeature("dashboard");
+      return;
+    }
 
-  form.addEventListener("submit", async (e) => {
+    renderFeature(activeFeature);
+    setMenuOpen(false);
+  }, [session, activeFeature, allowedFeatures]);
+
+  const handleLogout = () => {
+    stopAttendanceScanner();
+    saveSession(null);
+    setSession(null);
+    setActiveFeature("dashboard");
+    setNoticeState({ message: "", kind: "info" });
+  };
+
+  const handleLogin = async (e) => {
     e.preventDefault();
-    const formData = new FormData(form);
+    const formData = new FormData(e.currentTarget);
     const body = {
       role: String(formData.get("role") || "").trim().toUpperCase(),
       regNo: String(formData.get("regNo") || "").trim(),
@@ -246,87 +269,102 @@ function renderLogin() {
     };
 
     try {
-      setNotice(notice, "Checking credentials...", "info");
-      const res = await api("/login", { method: "POST", body });
-      const session = {
-        token: res.token || res,
-        regNo: res.regNo || body.regNo,
-        role: (res.role || body.role || "STUDENT").toUpperCase(),
-        student: res.student || null
-      };
-
-      if (session.role === "STUDENT" && !session.student) {
-        session.student = await api("/students/me", {
-          headers: {
-            Authorization: `Bearer ${session.token}`
-          }
-        });
-      }
-
-      saveSession(session);
-      state.activeFeature = "dashboard";
-      render();
+      setNoticeState({ message: "Checking credentials...", kind: "info" });
+      const loggedInSession = await loginUser(body);
+      saveSession(loggedInSession);
+      setSession(loggedInSession);
+      setActiveFeature("dashboard");
+      setNoticeState({ message: "", kind: "info" });
     } catch (err) {
-      setNotice(notice, err.message, "error");
+      setNoticeState({ message: err.message, kind: "error" });
     }
-  });
-}
+  };
 
-function logout() {
-  stopAttendanceScanner();
-  saveSession(null);
-  state.activeFeature = "dashboard";
-  render();
-}
+  if (!session) {
+    return (
+      <div className="page-bg">
+        <div className="ambient-shape shape-a"></div>
+        <div className="ambient-shape shape-b"></div>
+        <div className="login-wrap">
+          <div className="brand-block">
+            <p className="eyebrow">HostelMate</p>
+            <h1>Smart Hostel Experience</h1>
+            <p>Role-based access for student life, operations, and daily hostel updates.</p>
+            <ul className="brand-points">
+              <li>Attendance and QR workflow</li>
+              <li>Menu, outpass, complaints, circulars</li>
+              <li>Fast access on mobile and desktop</li>
+            </ul>
+          </div>
+          <form id="loginForm" className="panel login-panel" onSubmit={handleLogin}>
+            <h2>Sign In</h2>
+            <label>Role</label>
+            <select name="role" defaultValue="STUDENT" required>
+              <option value="STUDENT">Student</option>
+              <option value="FACULTY">Faculty</option>
+              <option value="ADMIN">Admin</option>
+            </select>
 
-function renderShell() {
-  const { role, regNo } = state.session;
-  const items = ROLE_FEATURES[role] || ROLE_FEATURES.STUDENT;
+            <label>Register Number</label>
+            <input name="regNo" type="text" required placeholder="Enter register number" />
 
-  app.innerHTML = `
-    <div class="shell">
-      <aside class="sidebar">
-        <div class="sidebar-top">
-          <h2>Hostel HMS</h2>
-          <p>${roleBadge(role)} ${regNo}</p>
+            <label>Password</label>
+            <input name="password" type="password" required placeholder="Enter password" />
+
+            <button type="submit">Login to HostelMate</button>
+            {notice.message ? <div className={`notice ${notice.kind}`}>{notice.message}</div> : null}
+          </form>
         </div>
-        <nav id="menuNav" class="menu"></nav>
-        <button id="logoutBtn" class="ghost">Logout</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="shell">
+      <aside className={`sidebar ${menuOpen ? "open" : ""}`}>
+        <div className="sidebar-top">
+          <div className="sidebar-brand">
+            <img src="/assets/images/sec-logo.png" alt="Saveetha Engineering College logo" />
+            <p className="logo-chip">HostelMate</p>
+          </div>
+          <p>
+            <span className="badge">{session.role}</span> {session.regNo}
+          </p>
+        </div>
+        <nav className="menu">
+          {allowedFeatures.map((feature) => (
+            <button
+              key={feature}
+              className={`menu-item ${activeFeature === feature ? "active" : ""}`}
+              onClick={() => setActiveFeature(feature)}
+            >
+              {FEATURES[feature]}
+            </button>
+          ))}
+        </nav>
+        <button className="ghost" onClick={handleLogout}>Logout</button>
       </aside>
-      <main class="content">
-        <header class="content-head">
-          <h1 id="featureTitle"></h1>
-          <p id="featureSub">Manage your hostel features based on your role.</p>
+      <main className="content">
+        <header className="content-head">
+          <div>
+            <h1>{FEATURES[activeFeature] || "Dashboard"}</h1>
+            <p>Manage hostel operations from a single role-based workspace.</p>
+          </div>
+          <button className="menu-toggle" onClick={() => setMenuOpen((prev) => !prev)}>Menu</button>
         </header>
-        <section id="featureRoot" class="panel"></section>
+        <section id="featureRoot" className="panel"></section>
       </main>
     </div>
-  `;
-
-  const nav = document.getElementById("menuNav");
-  nav.innerHTML = items
-    .map(
-      (feature) =>
-        `<button class="menu-item ${state.activeFeature === feature ? "active" : ""}" data-feature="${feature}">${FEATURES[feature]}</button>`
-    )
-    .join("");
-
-  nav.querySelectorAll(".menu-item").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      state.activeFeature = btn.dataset.feature;
-      render();
-    });
-  });
-
-  document.getElementById("logoutBtn").addEventListener("click", logout);
+  );
 }
 
 function renderFeature(feature) {
   stopAttendanceScanner();
 
   const root = document.getElementById("featureRoot");
-  const title = document.getElementById("featureTitle");
-  title.textContent = FEATURES[feature] || "Dashboard";
+  if (!root) {
+    return;
+  }
 
   const renderers = {
     dashboard: renderDashboard,
@@ -347,40 +385,60 @@ function renderFeature(feature) {
 
 function renderDashboard(root) {
   const { role, regNo, student } = state.session;
+  const studentName = student?.name || "Student";
+  const studentDepartment = student?.department || "-";
+  const studentYear = student?.year || "-";
+  const studentHostel = student?.hostelName || student?.HostelName || "-";
+  const studentRoom = student?.roomNo || student?.RoomNo || "-";
+  const studentFloor = student?.floorNo || "-";
+  const studentPhone = student?.phoneNumber || "-";
+  const roleLine =
+    role === "STUDENT"
+      ? `${studentDepartment} | ${studentYear}`
+      : `${role} ACCESS`;
 
   root.innerHTML = `
-    <div class="grid">
-      ${card("Role", role)}
-      ${card("Logged RegNo", regNo)}
-      ${card("Features", (ROLE_FEATURES[role] || []).length)}
+    <div class="dashboard-template">
+      <header class="dashboard-college-bar">
+        <div class="dashboard-college-title">
+          <h3>Saveetha Engineering College (Autonomous)</h3>
+          <p>HostelMate Campus Dashboard</p>
+        </div>
+        <div class="dashboard-user-chip">
+          <img src="${DEFAULT_PROFILE_ICON}" alt="Default profile" />
+          <div>
+            <strong>${studentName.toUpperCase()}</strong>
+            <p>${regNo}</p>
+          </div>
+        </div>
+      </header>
+
+      <section class="dashboard-main">
+        <article class="dashboard-identity">
+          <img src="${DEFAULT_PROFILE_ICON}" alt="Default profile" />
+          <div class="dashboard-identity-text">
+            <h4>${studentName.toUpperCase()}</h4>
+            <p>${roleLine}</p>
+            <span>${regNo}</span>
+          </div>
+        </article>
+
+        <article class="dashboard-profile-panel">
+          <h3>Profile</h3>
+          <div class="dashboard-profile-list">
+            ${profileLine("Regester No", regNo)}
+            ${profileLine("Name", studentName)}
+            ${profileLine("Department", studentDepartment)}
+            ${profileLine("Year", studentYear)}
+            ${profileLine("Hostel", studentHostel)}
+            ${profileLine("Room", studentRoom)}
+            ${profileLine("Floor", studentFloor)}
+            ${profileLine("Phone", studentPhone)}
+          </div>
+        </article>
+      </section>
     </div>
-    <div class="spacer"></div>
-    <h3>Profile</h3>
-    <div id="studentProfile"></div>
   `;
-
-  const profile = document.getElementById("studentProfile");
-
-  if (role === "STUDENT") {
-    if (!student) {
-      profile.innerHTML = `<p>No student details found for this regNo.</p>`;
-      return;
-    }
-
-    profile.innerHTML = `
-      <div class="grid">
-        ${card("Name", student.name)}
-        ${card("Department", student.department)}
-        ${card("Year", student.year)}
-        ${card("Hostel", student.hostelName || student.HostelName)}
-        ${card("Room", student.roomNo || student.RoomNo)}
-        ${card("Floor", student.floorNo)}
-        ${card("Phone", student.phoneNumber)}
-      </div>
-    `;
-  } else {
-    profile.innerHTML = `<p>You have ${role.toLowerCase()} access to the hostel operations from the left menu.</p>`;
-  }
 }
 
 function renderStudents(root) {
@@ -1271,4 +1329,5 @@ function renderIndoor(root) {
   resetCameraButtons();
 }
 
-render();
+const reactRoot = ReactDOM.createRoot(appRoot);
+reactRoot.render(<App />);

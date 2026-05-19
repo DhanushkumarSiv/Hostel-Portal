@@ -14,9 +14,11 @@ public class IndoorCourtController {
 
     @PostMapping("/scan")
     public String scanQR(@RequestParam String studentId,
-                         @RequestParam String studentName) {
+                         @RequestParam String studentName,
+                         @RequestParam String roomNo,
+                         @RequestParam String mobileNo) {
 
-        return service.scanIndoorCourtQR(studentId, studentName);
+        return service.scanIndoorCourtQR(studentId, studentName, roomNo, mobileNo);
     }
 
     @GetMapping("/status")

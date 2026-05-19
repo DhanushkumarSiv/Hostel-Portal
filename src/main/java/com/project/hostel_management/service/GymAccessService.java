@@ -14,13 +14,16 @@ public class GymAccessService {
     @Autowired
     private GymAccessRepository repository;
 
-    public String scanGymQR(String studentId, String studentName) {
+    public String scanGymQR(String studentId,
+                             String studentName,
+                             String roomNo,
+                             String mobileNo) {
 
         Optional<GymAccess> activeEntry =
                 repository.findByStudentIdAndStatus(studentId, "ACTIVE");
 
         // RETURNING KEY
-        if(activeEntry.isPresent()) {
+        if (activeEntry.isPresent()) {
 
             GymAccess access = activeEntry.get();
 
@@ -37,6 +40,9 @@ public class GymAccessService {
 
         access.setStudentId(studentId);
         access.setStudentName(studentName);
+        access.setRoomNo(roomNo);
+        access.setMobileNo(mobileNo);
+
         access.setOpenTime(LocalDateTime.now());
         access.setStatus("ACTIVE");
 
@@ -50,7 +56,7 @@ public class GymAccessService {
         Optional<GymAccess> activeGym =
                 repository.findByStatus("ACTIVE");
 
-        if(activeGym.isPresent()) {
+        if (activeGym.isPresent()) {
             return "GYM OPENED";
         }
 

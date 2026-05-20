@@ -26,4 +26,6 @@ public interface ComplaintRepository extends JpaRepository<Complaint, Long> {
 
     // Get by student
     List<Complaint> findByStudentId(String studentId);
+
+    List<Complaint> findByStudentIdInOrderByIsEmergencyDescCreatedAtDesc(List<String> studentIds);
 }

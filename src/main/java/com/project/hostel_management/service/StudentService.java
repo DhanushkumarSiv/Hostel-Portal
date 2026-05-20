@@ -29,5 +29,8 @@ public class StudentService {
         return studentRepository.findByRegNo(regNo);
     }
 
+    public List<Student> getStudentsByFloorNo(String floorNo) {
+        return studentRepository.findByFloorNoIgnoreCaseOrderByNameAsc(floorNo);
+    }
 
 }

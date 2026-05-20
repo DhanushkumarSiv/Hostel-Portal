@@ -1,5 +1,6 @@
 package com.project.hostel_management.controller;
 
+import com.project.hostel_management.dto.AttendanceSummaryDto;
 import com.project.hostel_management.service.AttendanceService;
 import com.project.hostel_management.service.SecurityUtil;
 import com.project.hostel_management.service.StudentService;
@@ -28,7 +29,7 @@ public class AttendanceController {
     // Generate Student QR
     @GetMapping("/generate-qr")
     public Map<String, String> generateQR() {
-        if (!securityUtil.hasAnyRole("FACULTY", "ADMIN")) {
+        if (!securityUtil.hasAnyRole("FACULTY")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
 
@@ -39,7 +40,7 @@ public class AttendanceController {
 
     @PostMapping("/decode-qr")
     public Map<String, String> decodeQr(@RequestBody Map<String, String> body) {
-        if (!securityUtil.hasAnyRole("STUDENT", "ADMIN")) {
+        if (!securityUtil.hasAnyRole("STUDENT")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
 
@@ -55,7 +56,7 @@ public class AttendanceController {
             @RequestBody Map<String, String> body,
             HttpServletRequest request
     ) {
-        if (!securityUtil.hasAnyRole("STUDENT", "ADMIN")) {
+        if (!securityUtil.hasAnyRole("STUDENT")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
 
@@ -74,5 +75,21 @@ public class AttendanceController {
                 student.getRoomNo(),
                 ipAddress
         );
+    }
+
+    @GetMapping("/daily/admin")
+    public AttendanceSummaryDto getAdminDailyAttendance() {
+        if (!securityUtil.hasAnyRole("ADMIN")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        return service.getAdminTodaySummary();
+    }
+
+    @GetMapping("/daily/faculty")
+    public AttendanceSummaryDto getFacultyDailyAttendance() {
+        if (!securityUtil.hasAnyRole("FACULTY")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        return service.getFacultyTodaySummary(securityUtil.getCurrentRegNo());
     }
 }

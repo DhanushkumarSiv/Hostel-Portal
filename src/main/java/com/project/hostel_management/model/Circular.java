@@ -18,7 +18,11 @@ public class Circular {
     @Column(columnDefinition = "TEXT")
     private String details;
 
-    private String publishedBy; // Admin name
+    private String publishedBy;
+
+    private String postedByRole;
+
+    private String targetFloorNo;
 
     private LocalDateTime createdAt;
 

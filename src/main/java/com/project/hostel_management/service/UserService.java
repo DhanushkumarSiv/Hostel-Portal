@@ -1,5 +1,6 @@
 package com.project.hostel_management.service;
 
+import com.project.hostel_management.dto.FacultyProfileDto;
 import com.project.hostel_management.dto.LoginRequest;
 import com.project.hostel_management.dto.LoginResponse;
 import com.project.hostel_management.model.Student;
@@ -16,6 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.LocalDateTime;
 import java.util.Locale;
 
 @Service
@@ -32,6 +34,9 @@ public class UserService {
 
     @Autowired
     private StudentRepository studentRepository;
+
+    @Autowired
+    private FacultyService facultyService;
 
 
     private BCryptPasswordEncoder encoder = new BCryptPasswordEncoder(12);
@@ -70,14 +75,22 @@ public class UserService {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "This account is registered as " + storedRole + ". Please select that role.");
         }
 
+        LocalDateTime previousLoginAt = user.getLastLoginAt();
+        user.setLastLoginAt(LocalDateTime.now());
+        repo.save(user);
+
         String token = jwtService.generateToken(user.getRegNo(), storedRole);
 
         Student student = null;
+        FacultyProfileDto faculty = null;
+
         if ("STUDENT".equals(storedRole)) {
             student = studentRepository.findByRegNo(user.getRegNo()).orElse(null);
+        } else if ("FACULTY".equals(storedRole)) {
+            faculty = facultyService.getFacultyProfileByLoginId(user.getRegNo()).orElse(null);
         }
 
-        return new LoginResponse(token, user.getRegNo(), storedRole, student);
+        return new LoginResponse(token, user.getRegNo(), storedRole, student, faculty, previousLoginAt);
     }
 
     private String normalizeRole(String role) {

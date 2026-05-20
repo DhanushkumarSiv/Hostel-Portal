@@ -1,6 +1,7 @@
 package com.project.hostel_management.controller;
 
 import com.project.hostel_management.model.Student;
+import com.project.hostel_management.service.FacultyService;
 import com.project.hostel_management.service.SecurityUtil;
 import com.project.hostel_management.service.StudentService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,6 +21,9 @@ public class StudentDataController {
 
     @Autowired
     private SecurityUtil securityUtil;
+
+    @Autowired
+    private FacultyService facultyService;
 
     // GET all students (FROM DATABASE)
     @GetMapping
@@ -59,6 +63,32 @@ public class StudentDataController {
                         HttpStatus.NOT_FOUND,
                         "Student not found for regNo: " + regNo
                 ));
+    }
+
+    @GetMapping("/floor/{floorNo}")
+    public List<Student> getStudentsByFloor(@PathVariable String floorNo) {
+        if (!securityUtil.hasAnyRole("ADMIN", "FACULTY")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        return studentService.getStudentsByFloorNo(floorNo);
+    }
+
+    @GetMapping("/floor/mine")
+    public List<Student> getMyFloorStudents() {
+        if (!securityUtil.hasAnyRole("FACULTY")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        String regNo = securityUtil.getCurrentRegNo();
+        var faculty = facultyService.findFacultyByLoginId(regNo)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Faculty profile not found for login: " + regNo
+                ));
+
+        return facultyService.resolveAssignedFloor(faculty)
+                .map(studentService::getStudentsByFloorNo)
+                .orElseGet(studentService::getAllStudents);
     }
 
 }

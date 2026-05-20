@@ -19,6 +19,9 @@ public class OutpassService {
     @Autowired
     private StudentRepository studentRepository;
 
+    @Autowired
+    private FacultyService facultyService;
+
     // ─── STUDENT: Submit outpass ───────────────────────────────────────────
 
     public Outpass submitOutpass(OutpassRequest request) {
@@ -72,6 +75,20 @@ public class OutpassService {
 
     public List<Outpass> getAllByFloor(String floorNo) {
         return outpassRepository.findByFloorNoOrderByCreatedAtDesc(floorNo);
+    }
+
+    public List<Outpass> getPendingForFaculty(String facultyLoginId) {
+        return facultyService.findFacultyByLoginId(facultyLoginId)
+                .flatMap(facultyService::resolveAssignedFloor)
+                .map(this::getPendingByFloor)
+                .orElseGet(this::getAllOutpasses);
+    }
+
+    public List<Outpass> getAllForFaculty(String facultyLoginId) {
+        return facultyService.findFacultyByLoginId(facultyLoginId)
+                .flatMap(facultyService::resolveAssignedFloor)
+                .map(this::getAllByFloor)
+                .orElseGet(this::getAllOutpasses);
     }
 
     // ─── FLOOR INCHARGE: Approve ────────────────────────────────────────────

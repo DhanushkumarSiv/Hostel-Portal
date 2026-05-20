@@ -469,6 +469,136 @@ th {
   color: var(--ink-soft);
 }
 
+.stack-card.circular-admin {
+  background: #f4f9ff;
+  border-color: #cfe0f6;
+}
+
+.stack-card.circular-faculty {
+  background: #f4fff6;
+  border-color: #caebd2;
+}
+
+.attendance-summary-wrap {
+  display: grid;
+  gap: 12px;
+}
+
+.attendance-summary-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.attendance-pie {
+  width: 130px;
+  height: 130px;
+  border-radius: 999px;
+  background: conic-gradient(#0fbe87 0 var(--present-angle), #f06272 var(--present-angle) 360deg);
+  border: 1px solid #d5e4f0;
+  box-shadow: inset 0 0 0 12px #fff;
+}
+
+.complaint-pie {
+  width: 130px;
+  height: 130px;
+  border-radius: 999px;
+  background: conic-gradient(
+    #ffb647 0 var(--pending-angle),
+    #5f8dff var(--pending-angle) calc(var(--pending-angle) + var(--progress-angle)),
+    #0fbe87 calc(var(--pending-angle) + var(--progress-angle)) 360deg
+  );
+  border: 1px solid #d5e4f0;
+  box-shadow: inset 0 0 0 12px #fff;
+}
+
+.outpass-pie {
+  width: 130px;
+  height: 130px;
+  border-radius: 999px;
+  background: conic-gradient(#0fbe87 0 var(--approved-angle), #f06272 var(--approved-angle) 360deg);
+  border: 1px solid #d5e4f0;
+  box-shadow: inset 0 0 0 12px #fff;
+}
+
+.attendance-summary-meta {
+  display: grid;
+  gap: 6px;
+}
+
+.attendance-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: #2d496a;
+  font-size: 0.9rem;
+}
+
+.attendance-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.dot.present {
+  background: #0fbe87;
+}
+
+.dot.absent {
+  background: #f06272;
+}
+
+.dot.complaint-pending {
+  background: #ffb647;
+}
+
+.dot.complaint-progress {
+  background: #5f8dff;
+}
+
+.dot.complaint-resolved {
+  background: #0fbe87;
+}
+
+.dot.outpass-approved {
+  background: #0fbe87;
+}
+
+.dot.outpass-pending {
+  background: #f06272;
+}
+
+.attendance-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.attendance-status.present {
+  background: #e3fff3;
+  color: #0f6e4f;
+}
+
+.attendance-status.absent {
+  background: #ffe9ec;
+  color: #95203a;
+}
+
+.menu-today {
+  background: #fff8df;
+}
+
 .notice {
   margin: 8px 0;
   padding: 10px 12px;

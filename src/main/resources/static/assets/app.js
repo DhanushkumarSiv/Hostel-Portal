@@ -106,6 +106,21 @@ function profileLine(label, value) {
   return `<div class="profile-line"><span>${label}</span><strong>${value || "-"}</strong></div>`;
 }
 
+function formatDateTimeParts(value) {
+  if (!value) {
+    return { date: "-", time: "-", display: "No previous login record" };
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return { date: "-", time: "-", display: String(value) };
+  }
+
+  const date = parsed.toLocaleDateString();
+  const time = parsed.toLocaleTimeString();
+  return { date, time, display: `${date} ${time}` };
+}
+
 const attendanceScannerState = {
   stream: null,
   rafId: null,
@@ -206,11 +221,21 @@ async function loginUser(body) {
     token: res.token || res,
     regNo: res.regNo || body.regNo,
     role: (res.role || body.role || "STUDENT").toUpperCase(),
-    student: res.student || null
+    student: res.student || null,
+    faculty: res.faculty || null,
+    previousLoginAt: res.previousLoginAt || null
   };
 
   if (session.role === "STUDENT" && !session.student) {
     session.student = await api("/students/me", {
+      headers: {
+        Authorization: `Bearer ${session.token}`
+      }
+    });
+  }
+
+  if (session.role === "FACULTY" && !session.faculty) {
+    session.faculty = await api("/faculty/me", {
       headers: {
         Authorization: `Bearer ${session.token}`
       }
@@ -384,7 +409,98 @@ function renderFeature(feature) {
 }
 
 function renderDashboard(root) {
-  const { role, regNo, student } = state.session;
+  const { role, regNo, student, faculty, previousLoginAt } = state.session;
+
+  if (role === "ADMIN") {
+    const previousLogin = formatDateTimeParts(previousLoginAt);
+
+    root.innerHTML = `
+      <div class="dashboard-template">
+        <header class="dashboard-college-bar">
+          <div class="dashboard-college-title">
+            <h3>Saveetha Engineering College (Autonomous)</h3>
+            <p>HostelMate Campus Dashboard</p>
+          </div>
+          <div class="dashboard-user-chip">
+            <img src="${DEFAULT_PROFILE_ICON}" alt="Default profile" />
+            <div>
+              <strong>ADMIN</strong>
+              <p>${regNo}</p>
+            </div>
+          </div>
+        </header>
+
+        <section class="dashboard-main">
+          <article class="dashboard-identity">
+            <img src="${DEFAULT_PROFILE_ICON}" alt="Default profile" />
+            <div class="dashboard-identity-text">
+              <h4>ADMIN</h4>
+              <p>ADMIN ACCESS</p>
+              <span>${regNo}</span>
+            </div>
+          </article>
+
+          <article class="dashboard-profile-panel">
+            <h3>Login Data</h3>
+            <div class="dashboard-profile-list">
+              ${profileLine("Name", "ADMIN")}
+              ${profileLine("Previous Login Date", previousLogin.date)}
+              ${profileLine("Previous Login Time", previousLogin.time)}
+            </div>
+          </article>
+        </section>
+      </div>
+    `;
+    return;
+  }
+
+  if (role === "FACULTY") {
+    const facultyName = faculty?.name || "Faculty";
+    const facultyRoom = faculty?.roomNo || faculty?.RoomNo || "-";
+    const facultyFloor = faculty?.floorNo || "-";
+    const floorInchargeOf = faculty?.floorInchargeOf || faculty?.floorincharge || "-";
+
+    root.innerHTML = `
+      <div class="dashboard-template">
+        <header class="dashboard-college-bar">
+          <div class="dashboard-college-title">
+            <h3>Saveetha Engineering College (Autonomous)</h3>
+            <p>HostelMate Campus Dashboard</p>
+          </div>
+          <div class="dashboard-user-chip">
+            <img src="${DEFAULT_PROFILE_ICON}" alt="Default profile" />
+            <div>
+              <strong>${facultyName.toUpperCase()}</strong>
+              <p>${regNo}</p>
+            </div>
+          </div>
+        </header>
+
+        <section class="dashboard-main">
+          <article class="dashboard-identity">
+            <img src="${DEFAULT_PROFILE_ICON}" alt="Default profile" />
+            <div class="dashboard-identity-text">
+              <h4>${facultyName.toUpperCase()}</h4>
+              <p>FACULTY ACCESS</p>
+              <span>${regNo}</span>
+            </div>
+          </article>
+
+          <article class="dashboard-profile-panel">
+            <h3>Faculty Profile</h3>
+            <div class="dashboard-profile-list">
+              ${profileLine("Name", facultyName)}
+              ${profileLine("Room", facultyRoom)}
+              ${profileLine("Floor", facultyFloor)}
+              ${profileLine("Floor Incharge Of", floorInchargeOf)}
+            </div>
+          </article>
+        </section>
+      </div>
+    `;
+    return;
+  }
+
   const studentName = student?.name || "Student";
   const studentDepartment = student?.department || "-";
   const studentYear = student?.year || "-";
@@ -442,9 +558,13 @@ function renderDashboard(root) {
 }
 
 function renderStudents(root) {
+  const role = state.session.role;
+  const endpoint = role === "FACULTY" ? "/students/floor/mine" : "/students";
+  const buttonLabel = role === "FACULTY" ? "Load Floor Students" : "Load All Students";
+
   root.innerHTML = `
     <div class="actions">
-      <button id="loadStudentsBtn">Load Students</button>
+      <button id="loadStudentsBtn">${buttonLabel}</button>
     </div>
     <div id="studentsNotice"></div>
     <div id="studentsTable"></div>
@@ -457,17 +577,41 @@ function renderStudents(root) {
   btn.addEventListener("click", async () => {
     try {
       setNotice(notice, "Loading students...", "info");
-      const students = await api("/students");
+      const students = await api(endpoint);
       setNotice(notice, `Loaded ${students.length} students`, "success");
-      tableRoot.innerHTML = tableFromStudents(students);
+      tableRoot.innerHTML = tableFromStudents(students, role);
     } catch (err) {
       setNotice(notice, err.message, "error");
     }
   });
 }
 
-function tableFromStudents(students) {
+function tableFromStudents(students, role) {
   if (!students.length) return "<p>No students found.</p>";
+
+  if (role === "ADMIN" || role === "FACULTY") {
+    const rows = students
+      .map(
+        (s) => `<tr>
+      <td>${s.name || ""}</td>
+      <td>${s.department || ""}</td>
+      <td>${s.year || ""}</td>
+      <td>${s.roomNo || s.RoomNo || ""}</td>
+      <td>${s.roomType || s.RoomType || ""}</td>
+    </tr>`
+      )
+      .join("");
+
+    return `
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Department</th><th>Year</th><th>Room No</th><th>Room Type</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
   const rows = students
     .map(
       (s) => `<tr>
@@ -492,13 +636,15 @@ function tableFromStudents(students) {
 
 function renderAttendance(root) {
   const role = state.session.role;
-  const canGenerate = role === "FACULTY" || role === "ADMIN";
-  const canMark = role === "STUDENT" || role === "ADMIN";
+  const canGenerate = role === "FACULTY";
+  const canMark = role === "STUDENT";
+  const canViewSummary = role === "ADMIN" || role === "FACULTY";
+  const summaryEndpoint = role === "ADMIN" ? "/attendance/daily/admin" : "/attendance/daily/faculty";
 
   root.innerHTML = `
     ${canGenerate ? `
       <div class="panel-lite">
-        <h3>Generate QR (Faculty/Admin)</h3>
+        <h3>Generate QR (Faculty)</h3>
         <button id="generateQrBtn">Generate Attendance QR</button>
         <div id="qrNotice"></div>
         <div id="generatedQrPreview" class="qr-preview">
@@ -508,15 +654,25 @@ function renderAttendance(root) {
       </div>
     ` : ""}
 
+    ${canViewSummary ? `
+      <div class="panel-lite">
+        <div class="actions">
+          <button id="loadAttendanceSummaryBtn">Load Today's Attendance</button>
+        </div>
+        <div id="attendanceSummaryNotice"></div>
+        <div id="attendanceSummaryContent"></div>
+      </div>
+    ` : ""}
+
     ${canMark ? `
       <div class="panel-lite">
-        <h3>Scan QR (Student/Admin)</h3>
+        <h3>Scan QR (Student)</h3>
         <div class="actions">
           <button id="scanQrBtn" type="button">Scan QR</button>
           <button id="stopScanBtn" type="button" class="ghost" disabled>Stop Camera</button>
         </div>
         <video id="scanVideo" class="scan-video" playsinline muted></video>
-        <p class="scan-help">Allow camera permission, point to the admin QR, and attendance will be marked automatically.</p>
+        <p class="scan-help">Allow camera permission, point to the faculty QR, and attendance will be marked automatically.</p>
         <form id="markAttendanceForm" class="form-grid">
           <label>QR Data</label>
           <textarea name="qrData" required rows="3" placeholder="Paste scanned QR payload"></textarea>
@@ -526,6 +682,26 @@ function renderAttendance(root) {
       </div>
     ` : ""}
   `;
+
+  if (canViewSummary) {
+    const summaryBtn = document.getElementById("loadAttendanceSummaryBtn");
+    const summaryNotice = document.getElementById("attendanceSummaryNotice");
+    const summaryContent = document.getElementById("attendanceSummaryContent");
+
+    const loadSummary = async () => {
+      try {
+        setNotice(summaryNotice, "Loading today's attendance...", "info");
+        const summary = await api(summaryEndpoint);
+        summaryContent.innerHTML = attendanceSummaryMarkup(summary, role);
+        setNotice(summaryNotice, `Loaded ${summary?.totalStudents || 0} students`, "success");
+      } catch (err) {
+        setNotice(summaryNotice, err.message, "error");
+      }
+    };
+
+    summaryBtn.addEventListener("click", loadSummary);
+    loadSummary();
+  }
 
   if (canGenerate) {
     const btn = document.getElementById("generateQrBtn");
@@ -622,13 +798,73 @@ function renderAttendance(root) {
   }
 }
 
+function attendanceSummaryMarkup(summary, role) {
+  const students = Array.isArray(summary?.students) ? summary.students : [];
+  const present = Number(summary?.presentCount || 0);
+  const absent = Number(summary?.absentCount || 0);
+  const total = Number(summary?.totalStudents || students.length || 0);
+  const presentAngle = total > 0 ? Math.round((present / total) * 360) : 0;
+  const showFloor = role === "ADMIN";
+
+  const rows = students
+    .map(
+      (s) => `<tr>
+        <td>${s.name || ""}</td>
+        <td>${s.roomNo || ""}</td>
+        <td>${s.roomType || ""}</td>
+        ${showFloor ? `<td>${s.floorNo || ""}</td>` : ""}
+        <td><span class="attendance-status ${String(s.attendance || "").toLowerCase()}">${s.attendance || ""}</span></td>
+      </tr>`
+    )
+    .join("");
+
+  return `
+    <div class="attendance-summary-wrap">
+      <div class="attendance-summary-top">
+        <div class="attendance-pie" style="--present-angle:${presentAngle}deg"></div>
+        <div class="attendance-summary-meta">
+          <p><strong>Date:</strong> ${summary?.date || "-"}</p>
+          <p><strong>Total Students:</strong> ${total}</p>
+          <p><strong>Present:</strong> ${present}</p>
+          <p><strong>Absent:</strong> ${absent}</p>
+        </div>
+      </div>
+      <div class="attendance-legend">
+        <span><i class="dot present"></i>Present</span>
+        <span><i class="dot absent"></i>Absent</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Room</th>
+              <th>Room Type</th>
+              ${showFloor ? "<th>Floor No</th>" : ""}
+              <th>Attendance</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 function renderCirculars(root) {
-  const isAdmin = state.session.role === "ADMIN";
+  const role = state.session.role;
+  const canPublish = role === "ADMIN" || role === "FACULTY";
+  const isAdmin = role === "ADMIN";
+  const publishNote =
+    role === "FACULTY"
+      ? "This circular will be sent only to your floor students."
+      : "This circular will be sent to all hostel students.";
 
   root.innerHTML = `
-    ${isAdmin ? `
+    ${canPublish ? `
       <form id="circularForm" class="form-grid">
         <h3>Publish Circular</h3>
+        <p class="scan-help">${publishNote}</p>
         <label>Subject</label>
         <input name="subject" required />
         <label>Details</label>
@@ -686,7 +922,7 @@ function renderCirculars(root) {
     }
   };
 
-  if (isAdmin) {
+  if (canPublish) {
     const form = document.getElementById("circularForm");
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -696,8 +932,7 @@ function renderCirculars(root) {
           method: "POST",
           body: {
             subject: String(fd.get("subject") || "").trim(),
-            details: String(fd.get("details") || "").trim(),
-            publishedBy: state.session.regNo
+            details: String(fd.get("details") || "").trim()
           }
         });
         form.reset();
@@ -715,21 +950,72 @@ function renderCirculars(root) {
 function renderCircularCards(data, isAdmin) {
   if (!data.length) return "<p>No circulars available.</p>";
   return data
-    .map(
-      (c) => `
-      <article class="stack-card">
+    .map((c) => {
+      const postedByRole = String(c.postedByRole || "ADMIN").toUpperCase();
+      const isFacultyPost = postedByRole === "FACULTY";
+      const roleText = isFacultyPost ? "Posted by Floor Incharge" : "Posted by Admin";
+      const roleClass = isFacultyPost ? "circular-faculty" : "circular-admin";
+      const floorText = isFacultyPost && c.targetFloorNo ? ` | Floor: ${c.targetFloorNo}` : "";
+
+      return `
+      <article class="stack-card ${roleClass}">
         <h4>${c.subject || "No subject"}</h4>
         <p>${c.details || ""}</p>
-        <small>${c.createdAt || ""}</small>
+        <small>${roleText}${floorText} | ${c.createdAt || ""}</small>
         ${isAdmin ? `<div class="actions"><button data-edit="${c.id}">Edit</button><button class="danger" data-delete="${c.id}">Delete</button></div>` : ""}
       </article>
-    `
-    )
+    `;
+    })
     .join("");
 }
 
+const WEEKDAY_ORDER = {
+  MONDAY: 1,
+  TUESDAY: 2,
+  WEDNESDAY: 3,
+  THURSDAY: 4,
+  FRIDAY: 5,
+  SATURDAY: 6,
+  SUNDAY: 7
+};
+
+function normalizeDayKey(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+}
+
+function sortMenusWeekly(rows) {
+  return [...rows].sort((a, b) => {
+    const aDay = normalizeDayKey(a.days);
+    const bDay = normalizeDayKey(b.days);
+    const aOrder = WEEKDAY_ORDER[aDay];
+    const bOrder = WEEKDAY_ORDER[bDay];
+
+    if (aOrder && bOrder) return aOrder - bOrder;
+    if (aOrder) return -1;
+    if (bOrder) return 1;
+    return String(a.days || "").localeCompare(String(b.days || ""));
+  });
+}
+
+function isTodayMenuDay(dayValue) {
+  const today = new Date().toLocaleDateString("en-US", { weekday: "long" });
+  return normalizeDayKey(dayValue) === normalizeDayKey(today);
+}
+
+function localIsoDateToday() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function renderMenu(root) {
-  const canEdit = state.session.role === "ADMIN" || state.session.role === "FACULTY";
+  const role = state.session.role;
+  const canEdit = role === "ADMIN";
   root.innerHTML = `
     ${canEdit ? `
       <form id="menuForm" class="form-grid">
@@ -809,30 +1095,33 @@ function renderMenu(root) {
 
 function menuTable(rows, canEdit) {
   if (!rows.length) return "<p>No menu entries available.</p>";
-  const body = rows
+  const body = sortMenusWeekly(rows)
     .map(
       (m) => `
-      <tr>
+      <tr class="${isTodayMenuDay(m.days) ? "menu-today" : ""}">
         <td>${m.days || ""}</td>
         <td>${m.breakfast || ""}</td>
         <td>${m.lunch || ""}</td>
         <td>${m.snacks || ""}</td>
         <td>${m.dinner || ""}</td>
-        <td>${canEdit ? `<button data-update-menu='${JSON.stringify(m).replace(/'/g, "&#39;")}'>Edit</button>` : "-"}</td>
+        ${canEdit ? `<td><button data-update-menu='${JSON.stringify(m).replace(/'/g, "&#39;")}'>Edit</button></td>` : ""}
       </tr>
     `
     )
     .join("");
 
-  return `<div class="table-wrap"><table><thead><tr><th>Day</th><th>Breakfast</th><th>Lunch</th><th>Snacks</th><th>Dinner</th><th>Action</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Day</th><th>Breakfast</th><th>Lunch</th><th>Snacks</th><th>Dinner</th>${canEdit ? "<th>Action</th>" : ""}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function renderComplaints(root) {
   const role = state.session.role;
-  const studentId = state.session.regNo;
+  const regNo = state.session.regNo;
+  const canUpdate = role === "FACULTY" || role === "ADMIN";
+  const endpoint =
+    role === "FACULTY" ? "/complaint/faculty/mine" : role === "ADMIN" ? "/complaint" : `/complaint/student/${regNo}`;
 
   root.innerHTML = `
-    ${(role === "STUDENT" || role === "ADMIN") ? `
+    ${role === "STUDENT" ? `
       <form id="complaintForm" class="form-grid">
         <h3>Post Complaint</h3>
         <label>Room Number</label><input name="roomNumber" required />
@@ -847,9 +1136,14 @@ function renderComplaints(root) {
       </form>
     ` : ""}
 
+    ${canUpdate ? `
+      <div class="panel-lite">
+        <div id="complaintSummary"></div>
+      </div>
+    ` : ""}
+
     <div class="actions">
-      ${(role === "FACULTY" || role === "ADMIN") ? `<button id="loadAllComplaints">Load All Complaints</button>` : ""}
-      <button id="loadMyComplaints">Load My Complaints</button>
+      <button id="loadComplaintsBtn">${canUpdate ? "Load Complaints" : "Load My Complaints"}</button>
     </div>
     <div id="complaintNotice"></div>
     <div id="complaintList"></div>
@@ -857,22 +1151,15 @@ function renderComplaints(root) {
 
   const notice = document.getElementById("complaintNotice");
   const list = document.getElementById("complaintList");
+  const summary = document.getElementById("complaintSummary");
 
-  const loadByStudent = async () => {
+  const loadComplaints = async () => {
     try {
-      const rows = await api(`/complaint/student/${studentId}`);
-      list.innerHTML = complaintCards(rows, role === "FACULTY" || role === "ADMIN");
-      bindComplaintActions();
-      setNotice(notice, `Loaded ${rows.length} complaint(s)`, "success");
-    } catch (err) {
-      setNotice(notice, err.message, "error");
-    }
-  };
-
-  const loadAll = async () => {
-    try {
-      const rows = await api("/complaint");
-      list.innerHTML = complaintCards(rows, true);
+      const rows = await api(endpoint);
+      list.innerHTML = complaintCards(rows, canUpdate);
+      if (summary) {
+        summary.innerHTML = complaintSummaryMarkup(rows);
+      }
       bindComplaintActions();
       setNotice(notice, `Loaded ${rows.length} complaint(s)`, "success");
     } catch (err) {
@@ -893,11 +1180,8 @@ function renderComplaints(root) {
     });
   }
 
-  const mineBtn = document.getElementById("loadMyComplaints");
-  mineBtn.addEventListener("click", loadByStudent);
-
-  const allBtn = document.getElementById("loadAllComplaints");
-  if (allBtn) allBtn.addEventListener("click", loadAll);
+  const loadBtn = document.getElementById("loadComplaintsBtn");
+  loadBtn.addEventListener("click", loadComplaints);
 
   const form = document.getElementById("complaintForm");
   if (form) {
@@ -905,17 +1189,49 @@ function renderComplaints(root) {
       e.preventDefault();
       const fd = new FormData(form);
       const body = Object.fromEntries(fd.entries());
-      body.studentId = studentId;
+      body.studentId = regNo;
       try {
         await api("/complaint", { method: "POST", body });
         form.reset();
         setNotice(notice, "Complaint submitted", "success");
-        await loadByStudent();
+        await loadComplaints();
       } catch (err) {
         setNotice(notice, err.message, "error");
       }
     });
   }
+
+  loadComplaints();
+}
+
+function complaintSummaryMarkup(rows) {
+  const today = localIsoDateToday();
+  const todayRows = rows.filter((row) => String(row.createdAt || "").slice(0, 10) === today);
+
+  const pending = todayRows.filter((row) => row.status === "PENDING").length;
+  const inProgress = todayRows.filter((row) => row.status === "IN_PROGRESS").length;
+  const resolved = todayRows.filter((row) => row.status === "RESOLVED").length;
+  const total = pending + inProgress + resolved;
+
+  const pendingAngle = total > 0 ? Math.round((pending / total) * 360) : 0;
+  const progressAngle = total > 0 ? Math.round((inProgress / total) * 360) : 0;
+
+  return `
+    <div class="attendance-summary-top">
+      <div class="complaint-pie" style="--pending-angle:${pendingAngle}deg;--progress-angle:${progressAngle}deg"></div>
+      <div class="attendance-summary-meta">
+        <p><strong>Today's Complaints:</strong> ${total}</p>
+        <p><strong>Pending:</strong> ${pending}</p>
+        <p><strong>In Progress:</strong> ${inProgress}</p>
+        <p><strong>Resolved:</strong> ${resolved}</p>
+      </div>
+    </div>
+    <div class="attendance-legend">
+      <span><i class="dot complaint-pending"></i>Pending</span>
+      <span><i class="dot complaint-progress"></i>In Progress</span>
+      <span><i class="dot complaint-resolved"></i>Resolved</span>
+    </div>
+  `;
 }
 
 function complaintCards(rows, canUpdate) {
@@ -944,9 +1260,12 @@ function complaintCards(rows, canUpdate) {
 function renderOutpass(root) {
   const role = state.session.role;
   const regNo = state.session.regNo;
+  const isStudent = role === "STUDENT";
+  const isFaculty = role === "FACULTY";
+  const isAdmin = role === "ADMIN";
 
   root.innerHTML = `
-    ${(role === "STUDENT" || role === "ADMIN") ? `
+    ${isStudent ? `
       <form id="outpassForm" class="form-grid">
         <h3>Submit Outpass</h3>
         <label>Out Date</label><input type="date" name="outDate" required />
@@ -958,14 +1277,19 @@ function renderOutpass(root) {
       </form>
     ` : ""}
 
+    ${isAdmin ? `
+      <div class="panel-lite">
+        <div id="outpassSummary"></div>
+      </div>
+    ` : ""}
+
     <div class="actions">
-      <button id="loadMyOutpass">My Outpass History</button>
-      ${(role === "FACULTY" || role === "ADMIN") ? `
-        <input id="floorNoInput" placeholder="Floor no" />
-        <button id="loadPendingFloor">Pending by Floor</button>
-        <button id="loadAllFloor">All by Floor</button>
+      ${isStudent ? `<button id="loadMyOutpass">My Outpass History</button>` : ""}
+      ${isFaculty ? `
+        <button id="loadPendingFloor">Pending Requests (My Floor)</button>
+        <button id="loadAllFloor">All Requests (My Floor)</button>
       ` : ""}
-      ${role === "ADMIN" ? `<button id="loadAllOutpass">All Outpasses</button>` : ""}
+      ${isAdmin ? `<button id="loadAllOutpass">All Outpasses</button>` : ""}
     </div>
 
     <div id="outpassNotice"></div>
@@ -974,20 +1298,54 @@ function renderOutpass(root) {
 
   const notice = document.getElementById("outpassNotice");
   const list = document.getElementById("outpassList");
+  const summaryRoot = document.getElementById("outpassSummary");
+  let currentLoader = null;
 
-  const renderList = (rows, canApprove) => {
+  const renderList = (rows, canApprove, mode) => {
     if (!rows.length) {
       list.innerHTML = "<p>No outpass entries found.</p>";
+      if (isAdmin && summaryRoot) {
+        summaryRoot.innerHTML = outpassSummaryMarkup([]);
+      }
       return;
     }
 
+    if (isAdmin && summaryRoot) {
+      summaryRoot.innerHTML = outpassSummaryMarkup(rows);
+    }
+
     list.innerHTML = rows
-      .map(
-        (o) => `
+      .map((o) => {
+        if (mode === "student-history") {
+          return `
         <article class="stack-card">
           <h4>${o.studentName || "Student"} (${o.regNo || ""})</h4>
           <p>Reason: ${o.reason || "-"}</p>
-          <small>Floor: ${o.floorNo || "-"} | Room: ${o.roomNo || "-"} | Status: ${o.status || "-"}</small>
+          <small>Out: ${o.outDate || "-"} ${o.outTime || "-"}</small>
+          <small>Return: ${o.returnDate || "-"} ${o.returnTime || "-"}</small>
+          <small>Status: ${formatOutpassStatus(o.status)}</small>
+        </article>
+      `;
+        }
+
+        if (mode === "admin-all") {
+          return `
+        <article class="stack-card">
+          <h4>${o.studentName || "Student"} (${o.regNo || ""})</h4>
+          <small>Out: ${o.outDate || "-"} ${o.outTime || "-"}</small>
+          <small>Return: ${o.returnDate || "-"} ${o.returnTime || "-"}</small>
+          <small>Status: ${formatOutpassStatus(o.status)}</small>
+        </article>
+      `;
+        }
+
+        return `
+        <article class="stack-card">
+          <h4>${o.studentName || "Student"} (${o.regNo || ""})</h4>
+          <p>Reason: ${o.reason || "-"}</p>
+          <small>Out: ${o.outDate || "-"} ${o.outTime || "-"}</small>
+          <small>Return: ${o.returnDate || "-"} ${o.returnTime || "-"}</small>
+          <small>Floor: ${o.floorNo || "-"} | Room: ${o.roomNo || "-"} | Status: ${formatOutpassStatus(o.status)}</small>
           ${canApprove && o.status === "PENDING" ? `
             <div class="actions">
               <button data-approve-id="${o.id}">Approve</button>
@@ -995,8 +1353,8 @@ function renderOutpass(root) {
             </div>
           ` : ""}
         </article>
-      `
-      )
+      `;
+      })
       .join("");
 
     if (canApprove) {
@@ -1005,6 +1363,7 @@ function renderOutpass(root) {
           try {
             await api(`/outpass/${btn.dataset.approveId}/approve`, { method: "PATCH" });
             setNotice(notice, "Outpass approved", "success");
+            if (currentLoader) await currentLoader();
           } catch (err) {
             setNotice(notice, err.message, "error");
           }
@@ -1017,6 +1376,7 @@ function renderOutpass(root) {
           try {
             await api(`/outpass/${btn.dataset.denyId}/deny?reason=${encodeURIComponent(reason)}`, { method: "PATCH" });
             setNotice(notice, "Outpass denied", "success");
+            if (currentLoader) await currentLoader();
           } catch (err) {
             setNotice(notice, err.message, "error");
           }
@@ -1025,63 +1385,75 @@ function renderOutpass(root) {
     }
   };
 
-  document.getElementById("loadMyOutpass").addEventListener("click", async () => {
+  const loadStudentHistory = async () => {
     try {
       const rows = await api(`/outpass/my/${regNo}`);
-      renderList(rows, false);
+      renderList(rows, false, "student-history");
       setNotice(notice, `Loaded ${rows.length} entries`, "success");
     } catch (err) {
       setNotice(notice, err.message, "error");
     }
-  });
+  };
+
+  const loadFacultyPending = async () => {
+    try {
+      const rows = await api("/outpass/faculty/mine/pending");
+      renderList(rows, true, "faculty");
+      setNotice(notice, `Loaded ${rows.length} pending requests`, "success");
+    } catch (err) {
+      setNotice(notice, err.message, "error");
+    }
+  };
+
+  const loadFacultyAll = async () => {
+    try {
+      const rows = await api("/outpass/faculty/mine/all");
+      renderList(rows, true, "faculty");
+      setNotice(notice, `Loaded ${rows.length} requests`, "success");
+    } catch (err) {
+      setNotice(notice, err.message, "error");
+    }
+  };
+
+  const loadAdminAll = async () => {
+    try {
+      const rows = await api("/outpass/all");
+      renderList(rows, false, "admin-all");
+      setNotice(notice, `Loaded ${rows.length} total requests`, "success");
+    } catch (err) {
+      setNotice(notice, err.message, "error");
+    }
+  };
+
+  const myOutpassBtn = document.getElementById("loadMyOutpass");
+  if (myOutpassBtn) {
+    myOutpassBtn.addEventListener("click", async () => {
+      currentLoader = loadStudentHistory;
+      await loadStudentHistory();
+    });
+  }
 
   const pendingBtn = document.getElementById("loadPendingFloor");
-  const floorInput = document.getElementById("floorNoInput");
   if (pendingBtn) {
     pendingBtn.addEventListener("click", async () => {
-      const floor = String(floorInput.value || "").trim();
-      if (!floor) {
-        setNotice(notice, "Enter floor number", "error");
-        return;
-      }
-      try {
-        const rows = await api(`/outpass/floor/${encodeURIComponent(floor)}/pending`);
-        renderList(rows, true);
-        setNotice(notice, `Loaded ${rows.length} pending requests`, "success");
-      } catch (err) {
-        setNotice(notice, err.message, "error");
-      }
+      currentLoader = loadFacultyPending;
+      await loadFacultyPending();
     });
   }
 
   const allFloorBtn = document.getElementById("loadAllFloor");
   if (allFloorBtn) {
     allFloorBtn.addEventListener("click", async () => {
-      const floor = String(floorInput.value || "").trim();
-      if (!floor) {
-        setNotice(notice, "Enter floor number", "error");
-        return;
-      }
-      try {
-        const rows = await api(`/outpass/floor/${encodeURIComponent(floor)}/all`);
-        renderList(rows, true);
-        setNotice(notice, `Loaded ${rows.length} requests`, "success");
-      } catch (err) {
-        setNotice(notice, err.message, "error");
-      }
+      currentLoader = loadFacultyAll;
+      await loadFacultyAll();
     });
   }
 
   const allOutBtn = document.getElementById("loadAllOutpass");
   if (allOutBtn) {
     allOutBtn.addEventListener("click", async () => {
-      try {
-        const rows = await api("/outpass/all");
-        renderList(rows, false);
-        setNotice(notice, `Loaded ${rows.length} total requests`, "success");
-      } catch (err) {
-        setNotice(notice, err.message, "error");
-      }
+      currentLoader = loadAdminAll;
+      await loadAdminAll();
     });
   }
 
@@ -1100,6 +1472,46 @@ function renderOutpass(root) {
       }
     });
   }
+
+  if (isFaculty) {
+    currentLoader = loadFacultyPending;
+    loadFacultyPending();
+  } else if (isAdmin) {
+    currentLoader = loadAdminAll;
+    loadAdminAll();
+  } else {
+    currentLoader = loadStudentHistory;
+    loadStudentHistory();
+  }
+}
+
+function outpassSummaryMarkup(rows) {
+  const today = localIsoDateToday();
+  const todayRows = rows.filter((row) => String(row.outDate || "") === today);
+  const approved = todayRows.filter((row) => row.status === "APPROVED").length;
+  const notApproved = Math.max(0, todayRows.length - approved);
+  const total = todayRows.length;
+  const approvedAngle = total > 0 ? Math.round((approved / total) * 360) : 0;
+
+  return `
+    <div class="attendance-summary-top">
+      <div class="outpass-pie" style="--approved-angle:${approvedAngle}deg"></div>
+      <div class="attendance-summary-meta">
+        <p><strong>Today's Outpass Requests:</strong> ${total}</p>
+        <p><strong>Approved:</strong> ${approved}</p>
+        <p><strong>Not Approved:</strong> ${notApproved}</p>
+      </div>
+    </div>
+    <div class="attendance-legend">
+      <span><i class="dot outpass-approved"></i>Approved</span>
+      <span><i class="dot outpass-pending"></i>Not Approved</span>
+    </div>
+  `;
+}
+
+function formatOutpassStatus(status) {
+  if (status === "DENIED") return "REJECTED";
+  return status || "-";
 }
 
 function renderFeedback(root) {

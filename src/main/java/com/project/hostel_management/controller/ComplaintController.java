@@ -33,10 +33,18 @@ public class ComplaintController {
 
     @GetMapping
     public List<Complaint> getAllComplaints() {
-        if (!securityUtil.hasAnyRole("FACULTY", "ADMIN")) {
+        if (!securityUtil.hasAnyRole("ADMIN")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
         return complaintService.getAllComplaints();
+    }
+
+    @GetMapping("/faculty/mine")
+    public List<Complaint> getFacultyComplaints() {
+        if (!securityUtil.hasAnyRole("FACULTY")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        return complaintService.getComplaintsForFaculty(securityUtil.getCurrentRegNo());
     }
 
     @GetMapping("/{id}")
@@ -69,6 +77,15 @@ public class ComplaintController {
         if (!securityUtil.hasAnyRole("FACULTY", "ADMIN")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
+
+        if (securityUtil.hasAnyRole("FACULTY")) {
+            boolean allowed = complaintService.getComplaintsForFaculty(securityUtil.getCurrentRegNo()).stream()
+                    .anyMatch(complaint -> complaint.getId() != null && complaint.getId().equals(id));
+            if (!allowed) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied for this complaint");
+            }
+        }
+
         return complaintService.updateStatus(id, status);
     }
 }

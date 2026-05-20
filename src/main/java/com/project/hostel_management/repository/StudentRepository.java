@@ -9,4 +9,6 @@ import java.util.List;
 public interface StudentRepository extends JpaRepository<Student, Long> {
     
     Optional<Student> findByRegNo(String regNo);
+
+    List<Student> findByFloorNoIgnoreCaseOrderByNameAsc(String floorNo);
 }

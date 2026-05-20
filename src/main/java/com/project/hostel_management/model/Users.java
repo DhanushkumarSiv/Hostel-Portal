@@ -6,6 +6,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import lombok.Data;
 
+import java.time.LocalDateTime;
+
 @Entity
 @Table(name = "users")
 @Data
@@ -16,4 +18,7 @@ public class Users {
     private String regNo;
     private String role;
     private String password;
+
+    @Column(name = "last_login_at")
+    private LocalDateTime lastLoginAt;
 }

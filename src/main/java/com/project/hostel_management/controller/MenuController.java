@@ -30,7 +30,7 @@ public class MenuController {
     // POST API
     @PostMapping
     public Menu createMenu(@RequestBody Menu menu) {
-        if (!securityUtil.hasAnyRole("ADMIN", "FACULTY")) {
+        if (!securityUtil.hasAnyRole("ADMIN")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
         return menuService.saveMenu(menu);
@@ -45,7 +45,7 @@ public class MenuController {
     // PUT - Update menu by ID
     @PutMapping("/{id}")
     public Menu updateMenu(@PathVariable Long id, @RequestBody Menu menu) {
-        if (!securityUtil.hasAnyRole("ADMIN", "FACULTY")) {
+        if (!securityUtil.hasAnyRole("ADMIN")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
         return menuService.updateMenu(id, menu);

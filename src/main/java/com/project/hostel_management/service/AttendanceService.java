@@ -1,7 +1,11 @@
 package com.project.hostel_management.service;
 
+import com.project.hostel_management.dto.AttendanceRowDto;
+import com.project.hostel_management.dto.AttendanceSummaryDto;
 import com.project.hostel_management.model.Attendance;
+import com.project.hostel_management.model.Student;
 import com.project.hostel_management.repository.AttendanceRepository;
+import com.project.hostel_management.repository.StudentRepository;
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.BinaryBitmap;
 import com.google.zxing.DecodeHintType;
@@ -28,12 +32,20 @@ import java.util.Base64;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class AttendanceService {
 
     @Autowired
     private AttendanceRepository repository;
+
+    @Autowired
+    private StudentRepository studentRepository;
+
+    @Autowired
+    private FacultyService facultyService;
 
     // Generate QR text for student
     public Map<String, String> generateQR(String generatedBy) {
@@ -172,5 +184,48 @@ public class AttendanceService {
 
             return "Invalid QR";
         }
+    }
+
+    public AttendanceSummaryDto getAdminTodaySummary() {
+        List<Student> students = studentRepository.findAll();
+        return buildSummary("ALL_HOSTEL", students);
+    }
+
+    public AttendanceSummaryDto getFacultyTodaySummary(String facultyLoginId) {
+        List<Student> students = facultyService.findFacultyByLoginId(facultyLoginId)
+                .flatMap(facultyService::resolveAssignedFloor)
+                .map(studentRepository::findByFloorNoIgnoreCaseOrderByNameAsc)
+                .orElseGet(studentRepository::findAll);
+
+        return buildSummary("FACULTY_SCOPE", students);
+    }
+
+    private AttendanceSummaryDto buildSummary(String scope, List<Student> students) {
+        LocalDate today = LocalDate.now();
+        List<Attendance> attendanceRows = repository.findByAttendanceDate(today);
+
+        Set<String> presentIds = attendanceRows.stream()
+                .map(Attendance::getStudentId)
+                .filter(id -> id != null && !id.isBlank())
+                .collect(Collectors.toSet());
+
+        List<AttendanceRowDto> rows = students.stream()
+                .map(student -> {
+                    boolean isPresent = presentIds.contains(student.getRegNo());
+                    return new AttendanceRowDto(
+                            student.getName(),
+                            student.getRoomNo(),
+                            student.getRoomType(),
+                            student.getFloorNo(),
+                            isPresent ? "PRESENT" : "ABSENT"
+                    );
+                })
+                .collect(Collectors.toList());
+
+        int presentCount = (int) rows.stream().filter(r -> "PRESENT".equals(r.getAttendance())).count();
+        int total = rows.size();
+        int absentCount = total - presentCount;
+
+        return new AttendanceSummaryDto(scope, today, presentCount, absentCount, total, rows);
     }
 }

@@ -47,7 +47,7 @@ public class OutpassController {
     // ─── FLOOR INCHARGE: View PENDING requests for their floor ──────────────
     @GetMapping("/floor/{floorNo}/pending")
     public List<Outpass> getPendingByFloor(@PathVariable String floorNo) {
-        if (!securityUtil.hasAnyRole("FACULTY", "ADMIN")) {
+        if (!securityUtil.hasAnyRole("ADMIN")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
         return outpassService.getPendingByFloor(floorNo);
@@ -56,10 +56,26 @@ public class OutpassController {
     // ─── FLOOR INCHARGE: View ALL requests for their floor ──────────────────
     @GetMapping("/floor/{floorNo}/all")
     public List<Outpass> getAllByFloor(@PathVariable String floorNo) {
-        if (!securityUtil.hasAnyRole("FACULTY", "ADMIN")) {
+        if (!securityUtil.hasAnyRole("ADMIN")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
         return outpassService.getAllByFloor(floorNo);
+    }
+
+    @GetMapping("/faculty/mine/pending")
+    public List<Outpass> getFacultyPending() {
+        if (!securityUtil.hasAnyRole("FACULTY")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        return outpassService.getPendingForFaculty(securityUtil.getCurrentRegNo());
+    }
+
+    @GetMapping("/faculty/mine/all")
+    public List<Outpass> getFacultyAll() {
+        if (!securityUtil.hasAnyRole("FACULTY")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        return outpassService.getAllForFaculty(securityUtil.getCurrentRegNo());
     }
 
     // ─── FLOOR INCHARGE: Approve ─────────────────────────────────────────────
@@ -67,6 +83,13 @@ public class OutpassController {
     public Outpass approveOutpass(@PathVariable Long id) {
         if (!securityUtil.hasAnyRole("FACULTY", "ADMIN")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        if (securityUtil.hasAnyRole("FACULTY")) {
+            boolean allowed = outpassService.getAllForFaculty(securityUtil.getCurrentRegNo()).stream()
+                    .anyMatch(outpass -> outpass.getId() != null && outpass.getId().equals(id));
+            if (!allowed) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied for this outpass");
+            }
         }
         return outpassService.approveOutpass(id);
     }
@@ -77,6 +100,13 @@ public class OutpassController {
                                @RequestParam(required = false) String reason) {
         if (!securityUtil.hasAnyRole("FACULTY", "ADMIN")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        if (securityUtil.hasAnyRole("FACULTY")) {
+            boolean allowed = outpassService.getAllForFaculty(securityUtil.getCurrentRegNo()).stream()
+                    .anyMatch(outpass -> outpass.getId() != null && outpass.getId().equals(id));
+            if (!allowed) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied for this outpass");
+            }
         }
         return outpassService.denyOutpass(id, reason);
     }

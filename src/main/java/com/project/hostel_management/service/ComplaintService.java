@@ -1,16 +1,25 @@
 package com.project.hostel_management.service;
 
 import com.project.hostel_management.model.Complaint;
+import com.project.hostel_management.repository.StudentRepository;
 import com.project.hostel_management.repository.ComplaintRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
 public class ComplaintService {
 
     @Autowired
     private ComplaintRepository complaintRepository;
+
+    @Autowired
+    private StudentRepository studentRepository;
+
+    @Autowired
+    private FacultyService facultyService;
 
     private static final int EMERGENCY_THRESHOLD = 3;
 
@@ -60,6 +69,29 @@ public class ComplaintService {
     // Get by student
     public List<Complaint> getByStudent(String studentId) {
         return complaintRepository.findByStudentId(studentId);
+    }
+
+    public List<Complaint> getComplaintsForFaculty(String facultyLoginId) {
+        var faculty = facultyService.findFacultyByLoginId(facultyLoginId).orElse(null);
+        if (faculty == null) {
+            return getAllComplaints();
+        }
+
+        String floor = facultyService.resolveAssignedFloor(faculty).orElse(null);
+        if (floor == null) {
+            return getAllComplaints();
+        }
+
+        List<String> studentIds = studentRepository.findByFloorNoIgnoreCaseOrderByNameAsc(floor).stream()
+                .map(student -> student.getRegNo())
+                .filter(regNo -> regNo != null && !regNo.isBlank())
+                .collect(Collectors.toList());
+
+        if (studentIds.isEmpty()) {
+            return List.of();
+        }
+
+        return complaintRepository.findByStudentIdInOrderByIsEmergencyDescCreatedAtDesc(studentIds);
     }
 
     // Update status

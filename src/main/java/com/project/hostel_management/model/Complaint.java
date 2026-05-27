@@ -40,7 +40,7 @@ public class Complaint {
     }
 
     public enum Category {
-        GENERAL, PERSONAL
+        GENERAL, PERSONAL, PUBLIC
     }
 
     public enum Status {

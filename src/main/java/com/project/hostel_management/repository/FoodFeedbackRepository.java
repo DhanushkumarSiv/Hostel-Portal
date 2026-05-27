@@ -9,4 +9,6 @@ public interface FoodFeedbackRepository extends JpaRepository<FoodFeedback, Long
 
     // Optional: get feedback by student regNo
     Optional<FoodFeedback> findByRegNo(String regNo);
+
+    List<FoodFeedback> findAllByOrderByCreatedAtDesc();
 }

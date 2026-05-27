@@ -72,6 +72,23 @@ public class ComplaintController {
         return complaintService.getByStudent(studentId);
     }
 
+    @GetMapping("/student/feed")
+    public List<Complaint> getStudentFeed() {
+        if (!securityUtil.hasAnyRole("STUDENT")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        return complaintService.getComplaintFeedForStudent(securityUtil.getCurrentRegNo());
+    }
+
+    @DeleteMapping("/{id}/student-delete")
+    public String deleteStudentPublicComplaint(@PathVariable Long id) {
+        if (!securityUtil.hasAnyRole("STUDENT")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        complaintService.deletePublicComplaintByStudent(id, securityUtil.getCurrentRegNo());
+        return "Complaint deleted";
+    }
+
     @PatchMapping("/{id}/status")
     public Complaint updateStatus(@PathVariable Long id, @RequestParam Complaint.Status status) {
         if (!securityUtil.hasAnyRole("FACULTY", "ADMIN")) {
@@ -83,6 +100,13 @@ public class ComplaintController {
                     .anyMatch(complaint -> complaint.getId() != null && complaint.getId().equals(id));
             if (!allowed) {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied for this complaint");
+            }
+
+            if (complaintService.isPublicComplaint(id)) {
+                throw new ResponseStatusException(
+                        HttpStatus.FORBIDDEN,
+                        "Faculty cannot update status of public complaints"
+                );
             }
         }
 

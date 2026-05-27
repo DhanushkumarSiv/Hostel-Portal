@@ -1,5 +1,6 @@
 package com.project.hostel_management.controller;
 
+import com.project.hostel_management.dto.FoodFeedbackViewDto;
 import com.project.hostel_management.model.FoodFeedback;
 import com.project.hostel_management.service.SecurityUtil;
 import com.project.hostel_management.service.FoodFeedbackService;
@@ -27,9 +28,9 @@ public class FoodFeedbackController {
     @PostMapping("/submit")
     public FoodFeedback submitFeedback(@RequestParam int rating,
                                        @RequestParam String message,
-                                       @RequestParam("image") MultipartFile image)
+                                       @RequestParam(value = "image", required = false) MultipartFile image)
             throws IOException {
-        if (!securityUtil.hasAnyRole("STUDENT", "ADMIN")) {
+        if (!securityUtil.hasAnyRole("STUDENT")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
         return service.submitFeedback(rating, message, image, securityUtil.getCurrentRegNo());
@@ -37,11 +38,20 @@ public class FoodFeedbackController {
 
     // GET - Retrieve all feedback
     @GetMapping("/all")
-    public List<FoodFeedback> getAllFeedback() {
-        if (!securityUtil.hasAnyRole("FACULTY", "ADMIN")) {
+    public List<FoodFeedbackViewDto> getAllFeedback() {
+        if (!securityUtil.hasAnyRole("STUDENT", "FACULTY", "ADMIN")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
-        return service.getAllFeedback();
+        return service.getAllFeedbackForRole(securityUtil.getCurrentRole(), securityUtil.getCurrentRegNo());
+    }
+
+    @DeleteMapping("/{id}")
+    public String deleteOwnFeedback(@PathVariable Long id) {
+        if (!securityUtil.hasAnyRole("STUDENT")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        service.deleteStudentFeedback(id, securityUtil.getCurrentRegNo());
+        return "Feedback deleted";
     }
 
 }

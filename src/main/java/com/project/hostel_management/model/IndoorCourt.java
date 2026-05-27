@@ -18,6 +18,8 @@ public class IndoorCourt {
 
     private String studentName;
 
+    private String keyHolderRole;
+
     private String roomNo;
 
     private String mobileNo;

@@ -1,12 +1,18 @@
 package com.project.hostel_management.service;
 
 import com.project.hostel_management.model.Complaint;
-import com.project.hostel_management.repository.StudentRepository;
+import com.project.hostel_management.model.Student;
 import com.project.hostel_management.repository.ComplaintRepository;
+import com.project.hostel_management.repository.StudentRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -23,23 +29,15 @@ public class ComplaintService {
 
     private static final int EMERGENCY_THRESHOLD = 3;
 
-    // Post a complaint
     public Complaint postComplaint(Complaint complaint) {
-
-        // Find similar complaints from same room with same title
         List<Complaint> similarComplaints = complaintRepository
-                .findSimilarComplaints(
-                        complaint.getRoomNumber(),
-                        complaint.getTitle()
-                );
+                .findSimilarComplaints(complaint.getRoomNumber(), complaint.getTitle());
 
-        int repeatCount = similarComplaints.size() + 1; // +1 for current complaint
+        int repeatCount = similarComplaints.size() + 1;
         complaint.setRepeatCount(repeatCount);
 
-        // If threshold crossed, mark current and all previous as emergency
         if (repeatCount >= EMERGENCY_THRESHOLD) {
             complaint.setEmergency(true);
-
             similarComplaints.forEach(c -> {
                 c.setEmergency(true);
                 c.setRepeatCount(repeatCount);
@@ -50,36 +48,102 @@ public class ComplaintService {
         return complaintRepository.save(complaint);
     }
 
-    // Get all complaints — emergency on top
     public List<Complaint> getAllComplaints() {
-        return complaintRepository.findAllByOrderByIsEmergencyDescCreatedAtDesc();
+        return filterExpiredPublic(complaintRepository.findAllByOrderByIsEmergencyDescCreatedAtDesc());
     }
 
-    // Get complaint by ID
     public Complaint getComplaintById(Long id) {
         return complaintRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Complaint not found for id: " + id));
     }
 
-    // Get by category — emergency on top
     public List<Complaint> getByCategory(Complaint.Category category) {
-        return complaintRepository.findByCategoryOrderByIsEmergencyDescCreatedAtDesc(category);
+        return filterExpiredPublic(complaintRepository.findByCategoryOrderByIsEmergencyDescCreatedAtDesc(category));
     }
 
-    // Get by student
     public List<Complaint> getByStudent(String studentId) {
-        return complaintRepository.findByStudentId(studentId);
+        return filterExpiredPublic(complaintRepository.findByStudentId(studentId));
     }
 
     public List<Complaint> getComplaintsForFaculty(String facultyLoginId) {
+        List<Complaint> floorComplaints = getFloorComplaintsForUser(facultyLoginId);
+        return filterExpiredPublic(floorComplaints);
+    }
+
+    public List<Complaint> getComplaintFeedForStudent(String studentRegNo) {
+        Student student = studentRepository.findByRegNo(studentRegNo)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student profile not found"));
+
+        String floorNo = student.getFloorNo();
+        if (floorNo == null || floorNo.isBlank()) {
+            return filterExpiredPublic(complaintRepository.findByStudentId(studentRegNo));
+        }
+
+        List<String> floorStudentIds = studentRepository.findByFloorNoIgnoreCaseOrderByNameAsc(floorNo).stream()
+                .map(Student::getRegNo)
+                .filter(regNo -> regNo != null && !regNo.isBlank())
+                .collect(Collectors.toList());
+
+        if (floorStudentIds.isEmpty()) {
+            return filterExpiredPublic(complaintRepository.findByStudentId(studentRegNo));
+        }
+
+        Set<Long> ownIds = complaintRepository.findByStudentId(studentRegNo).stream()
+                .map(Complaint::getId)
+                .collect(Collectors.toSet());
+
+        List<Complaint> complaints = complaintRepository.findByStudentIdInOrderByIsEmergencyDescCreatedAtDesc(floorStudentIds);
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(3);
+
+        return complaints.stream()
+                .filter(complaint -> {
+                    boolean own = complaint.getId() != null && ownIds.contains(complaint.getId());
+                    if (own) {
+                        return !isPublicComplaint(complaint) || isPublicVisible(complaint, cutoff);
+                    }
+                    return isPublicComplaint(complaint) && isPublicVisible(complaint, cutoff);
+                })
+                .collect(Collectors.toList());
+    }
+
+    public Complaint updateStatus(Long id, Complaint.Status newStatus) {
+        Complaint complaint = getComplaintById(id);
+        complaint.setStatus(newStatus);
+        return complaintRepository.save(complaint);
+    }
+
+    public void deletePublicComplaintByStudent(Long id, String studentRegNo) {
+        Complaint complaint = getComplaintById(id);
+
+        if (complaint.getStudentId() == null || !complaint.getStudentId().equalsIgnoreCase(studentRegNo)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "You can delete only your own complaint");
+        }
+
+        if (!isPublicComplaint(complaint)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only public complaints can be deleted here");
+        }
+
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(3);
+        if (!isPublicVisible(complaint, cutoff)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Delete window closed (3 days)");
+        }
+
+        complaintRepository.delete(complaint);
+    }
+
+    public boolean isPublicComplaint(Long id) {
+        return isPublicComplaint(getComplaintById(id));
+    }
+
+    private List<Complaint> getFloorComplaintsForUser(String facultyLoginId) {
         var faculty = facultyService.findFacultyByLoginId(facultyLoginId).orElse(null);
         if (faculty == null) {
-            return getAllComplaints();
+            return complaintRepository.findAllByOrderByIsEmergencyDescCreatedAtDesc();
         }
 
         String floor = facultyService.resolveAssignedFloor(faculty).orElse(null);
         if (floor == null) {
-            return getAllComplaints();
+            return complaintRepository.findAllByOrderByIsEmergencyDescCreatedAtDesc();
         }
 
         List<String> studentIds = studentRepository.findByFloorNoIgnoreCaseOrderByNameAsc(floor).stream()
@@ -88,17 +152,28 @@ public class ComplaintService {
                 .collect(Collectors.toList());
 
         if (studentIds.isEmpty()) {
-            return List.of();
+            return new ArrayList<>();
         }
 
         return complaintRepository.findByStudentIdInOrderByIsEmergencyDescCreatedAtDesc(studentIds);
     }
 
-    // Update status
-    public Complaint updateStatus(Long id, Complaint.Status newStatus) {
-        Complaint complaint = complaintRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Complaint not found for id: " + id));
-        complaint.setStatus(newStatus);
-        return complaintRepository.save(complaint);
+    private List<Complaint> filterExpiredPublic(List<Complaint> complaints) {
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(3);
+        return complaints.stream()
+                .filter(complaint -> !isPublicComplaint(complaint) || isPublicVisible(complaint, cutoff))
+                .collect(Collectors.toList());
+    }
+
+    private boolean isPublicVisible(Complaint complaint, LocalDateTime cutoff) {
+        return complaint.getCreatedAt() != null && !complaint.getCreatedAt().isBefore(cutoff);
+    }
+
+    private boolean isPublicComplaint(Complaint complaint) {
+        if (complaint == null || complaint.getCategory() == null) {
+            return false;
+        }
+        return complaint.getCategory() == Complaint.Category.PUBLIC
+                || complaint.getCategory() == Complaint.Category.GENERAL;
     }
 }

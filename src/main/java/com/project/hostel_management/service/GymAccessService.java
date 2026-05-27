@@ -6,7 +6,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 @Service
 public class GymAccessService {
@@ -14,52 +18,68 @@ public class GymAccessService {
     @Autowired
     private GymAccessRepository repository;
 
-    public String scanGymQR(String studentId,
-                             String studentName,
-                             String roomNo,
-                             String mobileNo) {
+    public String scanGymQR(String role,
+                            String studentId,
+                            String studentName,
+                            String roomNo,
+                            String mobileNo) {
 
         Optional<GymAccess> activeEntry =
                 repository.findByStudentIdAndStatus(studentId, "ACTIVE");
 
-        // RETURNING KEY
         if (activeEntry.isPresent()) {
-
             GymAccess access = activeEntry.get();
-
             access.setCloseTime(LocalDateTime.now());
             access.setStatus("RETURNED");
-
             repository.save(access);
-
             return "Gym key returned successfully";
         }
 
-        // TAKING KEY
         GymAccess access = new GymAccess();
-
         access.setStudentId(studentId);
         access.setStudentName(studentName);
+        access.setKeyHolderRole(role);
         access.setRoomNo(roomNo);
         access.setMobileNo(mobileNo);
-
         access.setOpenTime(LocalDateTime.now());
         access.setStatus("ACTIVE");
 
         repository.save(access);
-
         return "Gym key taken successfully";
     }
 
-    public String getGymStatus() {
+    public Map<String, Object> getGymStatusDetails() {
+        List<GymAccess> active = repository.findAllByStatus("ACTIVE");
+        List<GymAccess> logs = repository.findAllByOrderByOpenTimeDesc();
 
-        Optional<GymAccess> activeGym =
-                repository.findByStatus("ACTIVE");
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("status", active.isEmpty() ? "GYM CLOSED" : "GYM OPENED");
+        response.put("activeCount", active.size());
+        response.put("logs", logs);
+        return response;
+    }
 
-        if (activeGym.isPresent()) {
-            return "GYM OPENED";
-        }
+    public List<String> getOverdueAlertsForAdmin() {
+        LocalDateTime threshold = LocalDateTime.now().minusHours(4);
+        return repository.findByStatusAndOpenTimeBefore("ACTIVE", threshold).stream()
+                .map(this::buildAlertMessage)
+                .collect(Collectors.toList());
+    }
 
-        return "GYM CLOSED";
+    public List<String> getOverdueAlertsForUser(String regNo) {
+        LocalDateTime threshold = LocalDateTime.now().minusHours(4);
+        return repository.findByStatusAndOpenTimeBefore("ACTIVE", threshold).stream()
+                .filter(entry -> entry.getStudentId() != null && entry.getStudentId().equalsIgnoreCase(regNo))
+                .map(this::buildAlertMessage)
+                .collect(Collectors.toList());
+    }
+
+    private String buildAlertMessage(GymAccess entry) {
+        return "Gym key alert: " + safe(entry.getStudentName()) + " (" + safe(entry.getKeyHolderRole())
+                + ") has not returned key within 4 hours.";
+    }
+
+    private String safe(String value) {
+        return value == null || value.isBlank() ? "-" : value;
     }
 }

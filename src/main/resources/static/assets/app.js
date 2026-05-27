@@ -129,6 +129,19 @@ const attendanceScannerState = {
   lastDecodeAt: 0
 };
 
+const featureIntervals = [];
+
+function registerFeatureInterval(id) {
+  featureIntervals.push(id);
+}
+
+function clearFeatureIntervals() {
+  while (featureIntervals.length) {
+    const id = featureIntervals.pop();
+    clearInterval(id);
+  }
+}
+
 function stopAttendanceScanner() {
   attendanceScannerState.active = false;
   attendanceScannerState.decodeInFlight = false;
@@ -314,7 +327,7 @@ function App() {
           <div className="brand-block">
             <p className="eyebrow">HostelMate</p>
             <h1>Smart Hostel Experience</h1>
-            <p>Role-based access for student life, operations, and daily hostel updates.</p>
+
             <ul className="brand-points">
               <li>Attendance and QR workflow</li>
               <li>Menu, outpass, complaints, circulars</li>
@@ -385,6 +398,7 @@ function App() {
 
 function renderFeature(feature) {
   stopAttendanceScanner();
+  clearFeatureIntervals();
 
   const root = document.getElementById("featureRoot");
   if (!root) {
@@ -1118,17 +1132,17 @@ function renderComplaints(root) {
   const regNo = state.session.regNo;
   const canUpdate = role === "FACULTY" || role === "ADMIN";
   const endpoint =
-    role === "FACULTY" ? "/complaint/faculty/mine" : role === "ADMIN" ? "/complaint" : `/complaint/student/${regNo}`;
+    role === "FACULTY" ? "/complaint/faculty/mine" : role === "ADMIN" ? "/complaint" : "/complaint/student/feed";
 
   root.innerHTML = `
     ${role === "STUDENT" ? `
       <form id="complaintForm" class="form-grid">
         <h3>Post Complaint</h3>
         <label>Room Number</label><input name="roomNumber" required />
-        <label>Category</label>
+        <label>Type</label>
         <select name="category" required>
-          <option value="GENERAL">GENERAL</option>
           <option value="PERSONAL">PERSONAL</option>
+          <option value="PUBLIC">PUBLIC</option>
         </select>
         <label>Title</label><input name="title" required />
         <label>Description</label><textarea name="description" required rows="3"></textarea>
@@ -1156,11 +1170,12 @@ function renderComplaints(root) {
   const loadComplaints = async () => {
     try {
       const rows = await api(endpoint);
-      list.innerHTML = complaintCards(rows, canUpdate);
+      list.innerHTML = complaintCards(rows, canUpdate, role, regNo);
       if (summary) {
         summary.innerHTML = complaintSummaryMarkup(rows);
       }
       bindComplaintActions();
+      bindComplaintDeleteActions();
       setNotice(notice, `Loaded ${rows.length} complaint(s)`, "success");
     } catch (err) {
       setNotice(notice, err.message, "error");
@@ -1173,6 +1188,20 @@ function renderComplaints(root) {
         try {
           await api(`/complaint/${el.dataset.statusId}/status?status=${el.value}`, { method: "PATCH" });
           setNotice(notice, "Status updated", "success");
+        } catch (err) {
+          setNotice(notice, err.message, "error");
+        }
+      });
+    });
+  }
+
+  function bindComplaintDeleteActions() {
+    list.querySelectorAll("[data-delete-complaint-id]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api(`/complaint/${btn.dataset.deleteComplaintId}/student-delete`, { method: "DELETE" });
+          setNotice(notice, "Complaint deleted", "success");
+          await loadComplaints();
         } catch (err) {
           setNotice(notice, err.message, "error");
         }
@@ -1234,16 +1263,23 @@ function complaintSummaryMarkup(rows) {
   `;
 }
 
-function complaintCards(rows, canUpdate) {
+function complaintCards(rows, canUpdate, role, regNo) {
   if (!rows.length) return "<p>No complaints available.</p>";
   return rows
-    .map(
-      (c) => `
-      <article class="stack-card">
-        <h4>${c.title || "Complaint"} ${c.emergency || c.isEmergency ? "<span class=\"badge danger\">Emergency</span>" : ""}</h4>
+    .map((c) => {
+      const isPublic = complaintIsPublic(c);
+      const canFacultyUpdate = canUpdate && !(role === "FACULTY" && isPublic);
+      const isStudentOwner = role === "STUDENT" && String(c.studentId || "").toLowerCase() === String(regNo || "").toLowerCase();
+      const canDeletePublic = isStudentOwner && isPublic && complaintWithinDays(c, 3);
+      const publicBadge = isPublic ? `<span class="badge complaint-public-badge">PUBLIC</span>` : `<span class="badge">PERSONAL</span>`;
+      const publicClass = role === "ADMIN" && isPublic ? "complaint-public-card" : "";
+
+      return `
+      <article class="stack-card ${publicClass}">
+        <h4>${c.title || "Complaint"} ${publicBadge} ${c.emergency || c.isEmergency ? "<span class=\"badge danger\">Emergency</span>" : ""}</h4>
         <p>${c.description || ""}</p>
         <small>Student: ${c.studentId || "-"} | Room: ${c.roomNumber || "-"} | Status: ${c.status || "-"}</small>
-        ${canUpdate ? `
+        ${canFacultyUpdate ? `
           <label>Update Status</label>
           <select data-status-id="${c.id}">
             <option ${c.status === "PENDING" ? "selected" : ""} value="PENDING">PENDING</option>
@@ -1251,10 +1287,23 @@ function complaintCards(rows, canUpdate) {
             <option ${c.status === "RESOLVED" ? "selected" : ""} value="RESOLVED">RESOLVED</option>
           </select>
         ` : ""}
+        ${canDeletePublic ? `<div class="actions"><button class="danger" data-delete-complaint-id="${c.id}">Delete</button></div>` : ""}
       </article>
-    `
-    )
+    `;
+    })
     .join("");
+}
+
+function complaintIsPublic(complaint) {
+  const category = String(complaint?.category || "").toUpperCase();
+  return category === "PUBLIC" || category === "GENERAL";
+}
+
+function complaintWithinDays(complaint, days) {
+  const created = complaint?.createdAt ? new Date(complaint.createdAt) : null;
+  if (!created || Number.isNaN(created.getTime())) return false;
+  const threshold = Date.now() - days * 24 * 60 * 60 * 1000;
+  return created.getTime() >= threshold;
 }
 
 function renderOutpass(root) {
@@ -1516,24 +1565,28 @@ function formatOutpassStatus(status) {
 
 function renderFeedback(root) {
   const role = state.session.role;
+  const isStudent = role === "STUDENT";
+  const canViewStudentDetails = role === "FACULTY" || role === "ADMIN";
 
   root.innerHTML = `
-    ${(role === "STUDENT" || role === "ADMIN") ? `
+    ${isStudent ? `
       <form id="feedbackForm" class="form-grid" enctype="multipart/form-data">
         <h3>Submit Food Feedback</h3>
         <label>Rating (1-5)</label>
         <input type="number" min="1" max="5" name="rating" required />
         <label>Message</label>
         <textarea name="message" required rows="3"></textarea>
-        <label>Image</label>
-        <input type="file" name="image" accept="image/*" required />
+        <label>Take Photo</label>
+        <input type="file" name="cameraImage" accept="image/*" capture="environment" />
+        <label>Or Upload From Device</label>
+        <input type="file" name="uploadImage" accept="image/*" />
         <button type="submit">Submit Feedback</button>
       </form>
     ` : ""}
 
-    ${(role === "FACULTY" || role === "ADMIN") ? `<button id="loadFeedbackBtn">Load Feedback</button>` : ""}
+    <button id="loadFeedbackBtn">Load Feedback</button>
     <div id="feedbackNotice"></div>
-    <div id="feedbackList"></div>
+    <div id="feedbackList" class="feedback-grid"></div>
   `;
 
   const notice = document.getElementById("feedbackNotice");
@@ -1548,17 +1601,34 @@ function renderFeedback(root) {
       }
 
       list.innerHTML = rows
-        .map(
-          (f) => `
-          <article class="stack-card">
-            <h4>${f.studentName || "Student"} (${f.regNo || ""})</h4>
+        .map((f) => {
+          const heading = canViewStudentDetails
+            ? `${f.studentName || "Student"} | Floor: ${f.floorNo || "-"} | Hostel: ${f.hostelName || "-"}`
+            : "Posted by Student";
+          const deleteBtn = isStudent && f.canDelete ? `<button class="danger" data-delete-feedback="${f.id}">Delete</button>` : "";
+          return `
+          <article class="stack-card feedback-card">
+            <h4>${heading}</h4>
             <p>Rating: ${f.rating || "-"}</p>
             <p>${f.message || ""}</p>
             ${f.imageName ? `<img class="preview" src="/uploads/feedback-images/${f.imageName}" alt="Feedback image" />` : ""}
+            ${deleteBtn ? `<div class="actions">${deleteBtn}</div>` : ""}
           </article>
-        `
-        )
+        `;
+        })
         .join("");
+
+      list.querySelectorAll("[data-delete-feedback]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await api(`/food_feedback/${btn.dataset.deleteFeedback}`, { method: "DELETE" });
+            setNotice(notice, "Feedback deleted", "success");
+            await loadFeedback();
+          } catch (err) {
+            setNotice(notice, err.message, "error");
+          }
+        });
+      });
     } catch (err) {
       setNotice(notice, err.message, "error");
     }
@@ -1574,171 +1644,220 @@ function renderFeedback(root) {
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const fd = new FormData(form);
+      const cameraImage = form.querySelector("input[name='cameraImage']")?.files?.[0] || null;
+      const uploadImage = form.querySelector("input[name='uploadImage']")?.files?.[0] || null;
+      const selectedImage = cameraImage || uploadImage;
+      fd.delete("cameraImage");
+      fd.delete("uploadImage");
+      if (selectedImage) {
+        fd.append("image", selectedImage);
+      }
       try {
         await api("/food_feedback/submit", { method: "POST", formData: fd });
         form.reset();
         setNotice(notice, "Feedback submitted", "success");
+        await loadFeedback();
       } catch (err) {
         setNotice(notice, err.message, "error");
       }
     });
   }
+
+  loadFeedback();
 }
 
 function renderGym(root) {
   const role = state.session.role;
+  const isAdmin = role === "ADMIN";
+
   root.innerHTML = `
     <div class="actions">
-      <button id="gymStatusBtn">Check Gym Status</button>
-      <button id="gymScanBtn">Scan Gym QR</button>
-      <button id="gymStopScanBtn" class="ghost" disabled>Stop Camera</button>
+      ${isAdmin ? `<button id="gymStatusBtn">Check Gym Status</button>` : `<button id="gymScanBtn">Scan Gym QR</button><button id="gymStopScanBtn" class="ghost" disabled>Stop Camera</button>`}
     </div>
-    <video id="gymScanVideo" class="scan-video" playsinline muted></video>
-    <p class="scan-help">Point the camera to Gym QR. After scan, key status updates automatically.</p>
-    ${role === "ADMIN" ? `
-      <form id="gymAdminForm" class="form-grid">
-        <label>Student ID</label><input name="studentId" required />
-        <label>Student Name</label><input name="studentName" required />
-        <label>Room Number</label><input name="roomNo" required />
-        <label>Mobile Number</label><input name="mobileNo" required />
-      </form>
-    ` : ""}
+    ${!isAdmin ? `<video id="gymScanVideo" class="scan-video" playsinline muted></video><p class="scan-help">Point camera to Gym QR. After scan, key status updates automatically.</p>` : ""}
     <div id="gymNotice"></div>
+    ${isAdmin ? `<div id="gymLogs"></div>` : ""}
   `;
 
   const notice = document.getElementById("gymNotice");
-  const form = document.getElementById("gymAdminForm");
-  const scanBtn = document.getElementById("gymScanBtn");
-  const stopBtn = document.getElementById("gymStopScanBtn");
-  const video = document.getElementById("gymScanVideo");
+  const logsRoot = document.getElementById("gymLogs");
 
-  const resetCameraButtons = () => {
-    scanBtn.disabled = false;
-    stopBtn.disabled = true;
-    video.srcObject = null;
-    video.style.display = "none";
+  if (isAdmin) {
+    document.getElementById("gymStatusBtn").addEventListener("click", async () => {
+      try {
+        const status = await api("/gym/status");
+        setNotice(notice, `${status?.status || "Gym status loaded"}`, "info");
+        logsRoot.innerHTML = keyLogMarkup(status?.logs || [], "Gym Key Usage");
+      } catch (err) {
+        setNotice(notice, err.message, "error");
+      }
+    });
+  }
+
+  if (!isAdmin) {
+    const scanBtn = document.getElementById("gymScanBtn");
+    const stopBtn = document.getElementById("gymStopScanBtn");
+    const video = document.getElementById("gymScanVideo");
+
+    const resetCameraButtons = () => {
+      scanBtn.disabled = false;
+      stopBtn.disabled = true;
+      video.srcObject = null;
+      video.style.display = "none";
+    };
+
+    scanBtn.addEventListener("click", async () => {
+      try {
+        scanBtn.disabled = true;
+        stopBtn.disabled = false;
+        video.style.display = "block";
+        setNotice(notice, "Camera started. Scanning Gym QR...", "info");
+
+        await startAttendanceScanner(video, async () => {
+          resetCameraButtons();
+          const msg = await api("/gym/scan", { method: "POST" });
+          setNotice(notice, typeof msg === "string" ? msg : "Gym action completed", "success");
+        });
+      } catch (err) {
+        resetCameraButtons();
+        stopAttendanceScanner();
+        setNotice(notice, err.message || "Unable to start camera scanner.", "error");
+      }
+    });
+
+    stopBtn.addEventListener("click", () => {
+      stopAttendanceScanner();
+      resetCameraButtons();
+      setNotice(notice, "Camera stopped.", "info");
+    });
+
+    resetCameraButtons();
+  }
+
+  const checkAlerts = async () => {
+    try {
+      const alerts = await api("/gym/alerts");
+      if (Array.isArray(alerts) && alerts.length) {
+        setNotice(notice, alerts.join(" | "), "error");
+      }
+    } catch (err) {
+      // silent
+    }
   };
 
-  document.getElementById("gymStatusBtn").addEventListener("click", async () => {
-    try {
-      const status = await api("/gym/status");
-      setNotice(notice, typeof status === "string" ? status : JSON.stringify(status), "info");
-    } catch (err) {
-      setNotice(notice, err.message, "error");
-    }
-  });
-
-  scanBtn.addEventListener("click", async () => {
-    try {
-      scanBtn.disabled = true;
-      stopBtn.disabled = false;
-      video.style.display = "block";
-      setNotice(notice, "Camera started. Scanning Gym QR...", "info");
-
-      await startAttendanceScanner(video, async () => {
-        resetCameraButtons();
-
-        let path = "/gym/scan";
-        if (role === "ADMIN" && form) {
-          const fd = new FormData(form);
-          const params = new URLSearchParams(fd);
-          path += `?${params.toString()}`;
-        }
-        const msg = await api(path, { method: "POST" });
-        setNotice(notice, typeof msg === "string" ? msg : "Gym action completed", "success");
-      });
-    } catch (err) {
-      resetCameraButtons();
-      stopAttendanceScanner();
-      setNotice(notice, err.message || "Unable to start camera scanner.", "error");
-    }
-  });
-
-  stopBtn.addEventListener("click", () => {
-    stopAttendanceScanner();
-    resetCameraButtons();
-    setNotice(notice, "Camera stopped.", "info");
-  });
-
-  resetCameraButtons();
+  if (isAdmin) document.getElementById("gymStatusBtn").click();
+  checkAlerts();
+  registerFeatureInterval(setInterval(checkAlerts, 45000));
 }
 
 function renderIndoor(root) {
   const role = state.session.role;
+  const isAdmin = role === "ADMIN";
+
   root.innerHTML = `
     <div class="actions">
-      <button id="indoorStatusBtn">Check Indoor Court Status</button>
-      <button id="indoorScanBtn">Scan Indoor Court QR</button>
-      <button id="indoorStopScanBtn" class="ghost" disabled>Stop Camera</button>
+      ${isAdmin ? `<button id="indoorStatusBtn">Check Indoor Court Status</button>` : `<button id="indoorScanBtn">Scan Indoor Court QR</button><button id="indoorStopScanBtn" class="ghost" disabled>Stop Camera</button>`}
     </div>
-    <video id="indoorScanVideo" class="scan-video" playsinline muted></video>
-    <p class="scan-help">Point the camera to Indoor Court QR. After scan, key status updates automatically.</p>
-    ${role === "ADMIN" ? `
-      <form id="indoorAdminForm" class="form-grid">
-        <label>Student ID</label><input name="studentId" required />
-        <label>Student Name</label><input name="studentName" required />
-        <label>Room Number</label><input name="roomNo" required />
-        <label>Mobile Number</label><input name="mobileNo" required />
-      </form>
-    ` : ""}
+    ${!isAdmin ? `<video id="indoorScanVideo" class="scan-video" playsinline muted></video><p class="scan-help">Point camera to Indoor Court QR. After scan, key status updates automatically.</p>` : ""}
     <div id="indoorNotice"></div>
+    ${isAdmin ? `<div id="indoorLogs"></div>` : ""}
   `;
 
   const notice = document.getElementById("indoorNotice");
-  const form = document.getElementById("indoorAdminForm");
-  const scanBtn = document.getElementById("indoorScanBtn");
-  const stopBtn = document.getElementById("indoorStopScanBtn");
-  const video = document.getElementById("indoorScanVideo");
+  const logsRoot = document.getElementById("indoorLogs");
 
-  const resetCameraButtons = () => {
-    scanBtn.disabled = false;
-    stopBtn.disabled = true;
-    video.srcObject = null;
-    video.style.display = "none";
+  if (isAdmin) {
+    document.getElementById("indoorStatusBtn").addEventListener("click", async () => {
+      try {
+        const status = await api("/indoor-court/status");
+        setNotice(notice, `${status?.status || "Indoor court status loaded"}`, "info");
+        logsRoot.innerHTML = keyLogMarkup(status?.logs || [], "Indoor Court Key Usage");
+      } catch (err) {
+        setNotice(notice, err.message, "error");
+      }
+    });
+  }
+
+  if (!isAdmin) {
+    const scanBtn = document.getElementById("indoorScanBtn");
+    const stopBtn = document.getElementById("indoorStopScanBtn");
+    const video = document.getElementById("indoorScanVideo");
+
+    const resetCameraButtons = () => {
+      scanBtn.disabled = false;
+      stopBtn.disabled = true;
+      video.srcObject = null;
+      video.style.display = "none";
+    };
+
+    scanBtn.addEventListener("click", async () => {
+      try {
+        scanBtn.disabled = true;
+        stopBtn.disabled = false;
+        video.style.display = "block";
+        setNotice(notice, "Camera started. Scanning Indoor Court QR...", "info");
+
+        await startAttendanceScanner(video, async () => {
+          resetCameraButtons();
+          const msg = await api("/indoor-court/scan", { method: "POST" });
+          setNotice(notice, typeof msg === "string" ? msg : "Indoor court action completed", "success");
+        });
+      } catch (err) {
+        resetCameraButtons();
+        stopAttendanceScanner();
+        setNotice(notice, err.message || "Unable to start camera scanner.", "error");
+      }
+    });
+
+    stopBtn.addEventListener("click", () => {
+      stopAttendanceScanner();
+      resetCameraButtons();
+      setNotice(notice, "Camera stopped.", "info");
+    });
+
+    resetCameraButtons();
+  }
+
+  const checkAlerts = async () => {
+    try {
+      const alerts = await api("/indoor-court/alerts");
+      if (Array.isArray(alerts) && alerts.length) {
+        setNotice(notice, alerts.join(" | "), "error");
+      }
+    } catch (err) {
+      // silent
+    }
   };
 
-  document.getElementById("indoorStatusBtn").addEventListener("click", async () => {
-    try {
-      const status = await api("/indoor-court/status");
-      setNotice(notice, typeof status === "string" ? status : JSON.stringify(status), "info");
-    } catch (err) {
-      setNotice(notice, err.message, "error");
-    }
-  });
+  if (isAdmin) document.getElementById("indoorStatusBtn").click();
+  checkAlerts();
+  registerFeatureInterval(setInterval(checkAlerts, 45000));
+}
 
-  scanBtn.addEventListener("click", async () => {
-    try {
-      scanBtn.disabled = true;
-      stopBtn.disabled = false;
-      video.style.display = "block";
-      setNotice(notice, "Camera started. Scanning Indoor Court QR...", "info");
+function keyLogMarkup(rows, heading) {
+  if (!rows.length) return `<p>${heading}: No key usage data found.</p>`;
 
-      await startAttendanceScanner(video, async () => {
-        resetCameraButtons();
+  const body = rows
+    .map(
+      (row) => `<tr>
+        <td>${row.keyHolderRole || "-"}</td>
+        <td>${row.studentName || "-"}</td>
+        <td>${row.openTime || row.OpenTime || "-"}</td>
+        <td>${row.closeTime || "-"}</td>
+        <td>${row.status || "-"}</td>
+      </tr>`
+    )
+    .join("");
 
-        let path = "/indoor-court/scan";
-        if (role === "ADMIN" && form) {
-          const fd = new FormData(form);
-          const params = new URLSearchParams(fd);
-          path += `?${params.toString()}`;
-        }
-        const msg = await api(path, { method: "POST" });
-        setNotice(notice, typeof msg === "string" ? msg : "Indoor court action completed", "success");
-      });
-    } catch (err) {
-      resetCameraButtons();
-      stopAttendanceScanner();
-      setNotice(notice, err.message || "Unable to start camera scanner.", "error");
-    }
-  });
-
-  stopBtn.addEventListener("click", () => {
-    stopAttendanceScanner();
-    resetCameraButtons();
-    setNotice(notice, "Camera stopped.", "info");
-  });
-
-  resetCameraButtons();
+  return `
+    <h3>${heading}</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Role</th><th>Name</th><th>Taken At</th><th>Returned At</th><th>Status</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 const reactRoot = ReactDOM.createRoot(appRoot);

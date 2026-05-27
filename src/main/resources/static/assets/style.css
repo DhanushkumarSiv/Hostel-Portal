@@ -576,6 +576,16 @@ th {
   background: #f06272;
 }
 
+.complaint-public-card {
+  border-color: #ffcd8a;
+  background: #fff7ec;
+}
+
+.complaint-public-badge {
+  background: #ffe7c4;
+  color: #8a4a00;
+}
+
 .attendance-status {
   display: inline-flex;
   align-items: center;
@@ -629,6 +639,21 @@ th {
   max-width: 220px;
   border-radius: 10px;
   border: 1px solid var(--line);
+}
+
+.feedback-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.feedback-card {
+  height: 260px;
+  overflow: auto;
+}
+
+.feedback-card .preview {
+  max-width: 100%;
 }
 
 .dashboard-template {

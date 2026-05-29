@@ -89,10 +89,11 @@ if (-not (Test-Path -Path $MAVEN_M2_PATH)) {
 }
 
 $MAVEN_WRAPPER_DISTS = $null
-if ((Get-Item $MAVEN_M2_PATH).Target[0] -eq $null) {
+$mavenM2Item = Get-Item $MAVEN_M2_PATH
+if (!$mavenM2Item.Target -or $mavenM2Item.Target.Count -eq 0) {
   $MAVEN_WRAPPER_DISTS = "$MAVEN_M2_PATH/wrapper/dists"
 } else {
-  $MAVEN_WRAPPER_DISTS = (Get-Item $MAVEN_M2_PATH).Target[0] + "/wrapper/dists"
+  $MAVEN_WRAPPER_DISTS = $mavenM2Item.Target[0] + "/wrapper/dists"
 }
 
 $MAVEN_HOME_PARENT = "$MAVEN_WRAPPER_DISTS/$distributionUrlNameMain"
@@ -102,6 +103,16 @@ $MAVEN_HOME = "$MAVEN_HOME_PARENT/$MAVEN_HOME_NAME"
 if (Test-Path -Path "$MAVEN_HOME" -PathType Container) {
   Write-Verbose "found existing MAVEN_HOME at $MAVEN_HOME"
   Write-Output "MVN_CMD=$MAVEN_HOME/bin/$MVN_CMD"
+  exit $?
+}
+
+$existingMaven = Get-ChildItem -Path "$MAVEN_HOME_PARENT" -Filter $MVN_CMD -Recurse -ErrorAction SilentlyContinue |
+  Where-Object { $_.FullName -match "[/\\]bin[/\\]$([regex]::Escape($MVN_CMD))$" } |
+  Select-Object -First 1
+if ($existingMaven) {
+  $existingMavenHome = Split-Path -Parent (Split-Path -Parent $existingMaven.FullName)
+  Write-Verbose "found existing Maven distribution at $existingMavenHome"
+  Write-Output "MVN_CMD=$existingMaven.FullName"
   exit $?
 }
 

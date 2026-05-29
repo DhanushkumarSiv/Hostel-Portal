@@ -24,7 +24,8 @@ public class IndoorCourt {
 
     private String mobileNo;
 
-    private LocalDateTime OpenTime;
+    @Column(name = "open_time")
+    private LocalDateTime openTime;
 
     private LocalDateTime closeTime;
 

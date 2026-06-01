@@ -36,9 +36,14 @@ import javax.imageio.ImageIO;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.awt.image.BufferedImage;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.EnumMap;
 import java.util.List;
@@ -47,9 +52,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.Arrays;
 
 @Service
 public class AttendanceService {
+    private static final String ATTENDANCE_ALLOWED_IP_PREFIX = "10.197.210.";
+    private static final long ATTENDANCE_QR_VALIDITY_MINUTES = 60L;
 
     @Autowired
     private AttendanceRepository repository;
@@ -155,6 +163,51 @@ public class AttendanceService {
         }
     }
 
+    public boolean isAllowedAttendanceScanIp(String ipAddress) {
+        if (ipAddress == null || ipAddress.isBlank()) {
+            return false;
+        }
+
+        List<String> normalizedIps = normalizedIpCandidates(ipAddress);
+
+        for (String normalizedIp : normalizedIps) {
+            if (normalizedIp.startsWith(ATTENDANCE_ALLOWED_IP_PREFIX)) {
+                return true;
+            }
+        }
+
+        boolean hasLoopback = normalizedIps.stream().anyMatch(this::isLoopbackIp);
+        if (hasLoopback) {
+            return localDeviceIpv4s().stream()
+                    .anyMatch(ip -> ip.startsWith(ATTENDANCE_ALLOWED_IP_PREFIX));
+        }
+
+        return false;
+    }
+
+    public String attendanceIpDebugValue(String ipAddress) {
+        if (ipAddress == null || ipAddress.isBlank()) {
+            return "unknown";
+        }
+
+        List<String> normalizedIps = normalizedIpCandidates(ipAddress);
+        String remoteIps = normalizedIps.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .collect(Collectors.joining(", "));
+
+        boolean hasLoopback = normalizedIps.stream().anyMatch(this::isLoopbackIp);
+        if (!hasLoopback) {
+            return remoteIps.isBlank() ? "unknown" : remoteIps;
+        }
+
+        List<String> deviceIps = localDeviceIpv4s();
+        String deviceIpText = deviceIps.isEmpty() ? "none" : String.join(", ", deviceIps);
+        if (remoteIps.isBlank()) {
+            return "loopback | Device IPs: " + deviceIpText;
+        }
+        return remoteIps + " | Device IPs: " + deviceIpText;
+    }
+
     // Mark Attendance
     public String markAttendance(
             String qrData,
@@ -189,16 +242,19 @@ public class AttendanceService {
                 return "Invalid or Expired QR Session";
             }
 
+            if (isAttendanceQrExpired(qrSession)) {
+                deactivateAttendanceQrSession(qrSession);
+                return "Expired QR";
+            }
+
             if (!sameFloor(qrSession.getFloorNo(), studentFloorNo)) {
                 return "Use QR Generated For Your Floor";
             }
 
-            // Validate Hostel WiFi
-            if(!(ipAddress.startsWith("192.168")
-                    || "127.0.0.1".equals(ipAddress)
-                    || "0:0:0:0:0:0:0:1".equals(ipAddress)
-                    || "::1".equals(ipAddress))) {
-                return "Connect to Hostel WiFi";
+            // Restrict student attendance scan to campus subnet.
+            if (!isAllowedAttendanceScanIp(ipAddress)) {
+                return "Attendance scan is allowed only on 10.197.210.* network. Detected IP: "
+                        + attendanceIpDebugValue(ipAddress);
             }
 
             // Check Duplicate Attendance
@@ -267,6 +323,13 @@ public class AttendanceService {
                         participant.floorNo(),
                         today
                 )
+                .filter(session -> {
+                    if (isAttendanceQrExpired(session)) {
+                        deactivateAttendanceQrSession(session);
+                        return false;
+                    }
+                    return true;
+                })
                 .map(this::toQrDto)
                 .orElse(null);
 
@@ -384,6 +447,10 @@ public class AttendanceService {
     }
 
     private AttendanceQrSessionDto toQrDto(AttendanceQrSession session) {
+        LocalDateTime expiresAt = session.getCreatedAt() == null
+                ? null
+                : session.getCreatedAt().plusMinutes(ATTENDANCE_QR_VALIDITY_MINUTES);
+
         return new AttendanceQrSessionDto(
                 session.getId(),
                 session.getSessionId(),
@@ -391,8 +458,27 @@ public class AttendanceService {
                 session.getFacultyName(),
                 session.getQrData(),
                 session.getQrImageDataUrl(),
-                session.getCreatedAt()
+                session.getCreatedAt(),
+                expiresAt
         );
+    }
+
+    private boolean isAttendanceQrExpired(AttendanceQrSession session) {
+        if (session == null || session.getCreatedAt() == null) {
+            return true;
+        }
+
+        LocalDateTime expiresAt = session.getCreatedAt().plusMinutes(ATTENDANCE_QR_VALIDITY_MINUTES);
+        return !LocalDateTime.now().isBefore(expiresAt);
+    }
+
+    private void deactivateAttendanceQrSession(AttendanceQrSession session) {
+        if (session == null || !session.isActive()) {
+            return;
+        }
+
+        session.setActive(false);
+        qrSessionRepository.save(session);
     }
 
     private AttendanceForumMessageDto toMessageDto(AttendanceForumMessage message) {
@@ -433,6 +519,76 @@ public class AttendanceService {
 
     private String defaultString(String value, String fallback) {
         return normalize(value).orElse(fallback);
+    }
+
+    private String normalizeIp(String ipAddress) {
+        String rawIp = defaultString(ipAddress, "").trim();
+        if (rawIp.isEmpty()) {
+            return rawIp;
+        }
+
+        if (rawIp.startsWith("::ffff:")) {
+            rawIp = rawIp.substring(7);
+        }
+
+        if (rawIp.startsWith("[") && rawIp.contains("]")) {
+            rawIp = rawIp.substring(1, rawIp.indexOf(']'));
+        }
+
+        int semicolonIndex = rawIp.indexOf(';');
+        if (semicolonIndex > -1) {
+            rawIp = rawIp.substring(0, semicolonIndex).trim();
+        }
+
+        // Strip port from IPv4 like 10.197.210.25:54321
+        int colonIndex = rawIp.indexOf(':');
+        if (colonIndex > -1 && rawIp.chars().filter(ch -> ch == ':').count() == 1) {
+            rawIp = rawIp.substring(0, colonIndex);
+        }
+
+        return rawIp;
+    }
+
+    private List<String> normalizedIpCandidates(String ipAddress) {
+        return Arrays.stream(defaultString(ipAddress, "").split(","))
+                .map(this::normalizeIp)
+                .filter(value -> value != null && !value.isBlank())
+                .collect(Collectors.toList());
+    }
+
+    private boolean isLoopbackIp(String ipAddress) {
+        return "127.0.0.1".equals(ipAddress)
+                || "::1".equals(ipAddress)
+                || "0:0:0:0:0:0:0:1".equals(ipAddress);
+    }
+
+    private List<String> localDeviceIpv4s() {
+        List<String> ips = new ArrayList<>();
+        try {
+            var networkInterfaces = NetworkInterface.getNetworkInterfaces();
+            if (networkInterfaces == null) {
+                return ips;
+            }
+
+            while (networkInterfaces.hasMoreElements()) {
+                NetworkInterface networkInterface = networkInterfaces.nextElement();
+                if (!networkInterface.isUp() || networkInterface.isLoopback()) {
+                    continue;
+                }
+
+                var addresses = networkInterface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress address = addresses.nextElement();
+                    if (address instanceof Inet4Address && !address.isLoopbackAddress()) {
+                        ips.add(address.getHostAddress());
+                    }
+                }
+            }
+        } catch (SocketException ignored) {
+            return List.of();
+        }
+
+        return ips;
     }
 
     private record ForumParticipant(String id, String name, String role, String floorNo) {

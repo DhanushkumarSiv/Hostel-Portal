@@ -636,6 +636,95 @@ textarea:focus {
   justify-self: start;
 }
 
+.attendance-scan-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(7, 12, 22, 0.86);
+  pointer-events: none;
+}
+
+.attendance-scan-frame {
+  position: fixed;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  overflow: hidden;
+}
+
+.attendance-scan-frame .corner {
+  position: absolute;
+  width: 42px;
+  height: 42px;
+  border: 5px solid #ffffff;
+}
+
+.attendance-scan-frame .corner.tl {
+  top: -2px;
+  left: -2px;
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: 20px 0 0 0;
+}
+
+.attendance-scan-frame .corner.tr {
+  top: -2px;
+  right: -2px;
+  border-left: 0;
+  border-bottom: 0;
+  border-radius: 0 20px 0 0;
+}
+
+.attendance-scan-frame .corner.bl {
+  bottom: -2px;
+  left: -2px;
+  border-right: 0;
+  border-top: 0;
+  border-radius: 0 0 0 20px;
+}
+
+.attendance-scan-frame .corner.br {
+  bottom: -2px;
+  right: -2px;
+  border-left: 0;
+  border-top: 0;
+  border-radius: 0 0 20px 0;
+}
+
+.attendance-scan-line {
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  top: -8%;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.68);
+}
+
+.attendance-scan-overlay.active .attendance-scan-line {
+  animation: attendanceScanSweep 1.4s ease-in-out infinite alternate;
+}
+
+.attendance-scan-label {
+  position: fixed;
+  transform: translateX(-50%);
+  color: #ffffff;
+  font-size: 1.05rem;
+  font-weight: 600;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
+}
+
+@keyframes attendanceScanSweep {
+  from {
+    top: 8%;
+  }
+
+  to {
+    top: calc(100% - 10%);
+  }
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

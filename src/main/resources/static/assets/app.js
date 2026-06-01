@@ -174,6 +174,11 @@ const feedbackPhotoState = {
   previewUrl: ""
 };
 
+const attendanceScanFxState = {
+  active: false,
+  timerId: null
+};
+
 const featureIntervals = [];
 
 function registerFeatureInterval(id) {
@@ -203,6 +208,87 @@ function stopAttendanceScanner() {
     attendanceScannerState.stream.getTracks().forEach((track) => track.stop());
     attendanceScannerState.stream = null;
   }
+}
+
+function ensureAttendanceScanOverlay() {
+  let overlay = document.getElementById("attendanceScanOverlay");
+  if (overlay) {
+    return overlay;
+  }
+
+  overlay = document.createElement("div");
+  overlay.id = "attendanceScanOverlay";
+  overlay.className = "attendance-scan-overlay";
+  overlay.hidden = true;
+  overlay.innerHTML = `
+    <div class="attendance-scan-frame">
+      <i class="corner tl"></i>
+      <i class="corner tr"></i>
+      <i class="corner bl"></i>
+      <i class="corner br"></i>
+      <span class="attendance-scan-line"></span>
+    </div>
+    <p class="attendance-scan-label">Scan QR code</p>
+  `;
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+function showAttendanceScanOverlay(targetEl) {
+  const overlay = ensureAttendanceScanOverlay();
+  const frame = overlay.querySelector(".attendance-scan-frame");
+  const label = overlay.querySelector(".attendance-scan-label");
+
+  let left = 0;
+  let top = 0;
+  let width = 0;
+  let height = 0;
+
+  if (targetEl) {
+    const rect = targetEl.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      left = rect.left;
+      top = rect.top;
+      width = rect.width;
+      height = rect.height;
+    }
+  }
+
+  if (!width || !height) {
+    const fallbackSize = Math.min(window.innerWidth * 0.72, 300);
+    left = (window.innerWidth - fallbackSize) / 2;
+    top = (window.innerHeight - fallbackSize) / 2 - 20;
+    width = fallbackSize;
+    height = fallbackSize;
+  }
+
+  frame.style.left = `${Math.round(left)}px`;
+  frame.style.top = `${Math.round(top)}px`;
+  frame.style.width = `${Math.round(width)}px`;
+  frame.style.height = `${Math.round(height)}px`;
+
+  const labelTop = Math.min(window.innerHeight - 48, top + height + 24);
+  label.style.left = `${Math.round(left + (width / 2))}px`;
+  label.style.top = `${Math.round(labelTop)}px`;
+
+  overlay.hidden = false;
+  requestAnimationFrame(() => overlay.classList.add("active"));
+}
+
+function hideAttendanceScanOverlay() {
+  const overlay = document.getElementById("attendanceScanOverlay");
+  if (!overlay) return;
+  overlay.classList.remove("active");
+  overlay.hidden = true;
+}
+
+function stopAttendanceScanFx() {
+  attendanceScanFxState.active = false;
+  if (attendanceScanFxState.timerId) {
+    clearTimeout(attendanceScanFxState.timerId);
+    attendanceScanFxState.timerId = null;
+  }
+  hideAttendanceScanOverlay();
 }
 
 function stopFeedbackCamera({ clearCapture = false } = {}) {
@@ -449,6 +535,7 @@ function App() {
   useEffect(() => {
     if (!session) {
       stopAttendanceScanner();
+      stopAttendanceScanFx();
       stopFeedbackCamera({ clearCapture: true });
       return;
     }
@@ -464,6 +551,7 @@ function App() {
 
   const handleLogout = () => {
     stopAttendanceScanner();
+    stopAttendanceScanFx();
     stopFeedbackCamera({ clearCapture: true });
     saveSession(null);
     setSession(null);
@@ -572,6 +660,7 @@ function App() {
 
 function renderFeature(feature) {
   stopAttendanceScanner();
+  stopAttendanceScanFx();
   stopFeedbackCamera({ clearCapture: true });
   clearFeatureIntervals();
 
@@ -947,7 +1036,12 @@ function renderAttendance(root) {
     });
 
     loadForum(true);
-    registerFeatureInterval(setInterval(() => loadForum(false), 8000));
+    registerFeatureInterval(setInterval(() => {
+      if (role === "STUDENT" && (attendanceScannerState.active || attendanceScanFxState.active)) {
+        return;
+      }
+      loadForum(false);
+    }, 8000));
   }
 
   if (canViewSummary) {
@@ -1070,26 +1164,43 @@ function bindAttendanceForumActions(forum, role) {
     return;
   }
 
+  const resetScannerUi = () => {
+    scanBtn.disabled = false;
+    stopAttendanceScanFx();
+  };
+
   scanBtn.addEventListener("click", async () => {
     const qrData = String(forum?.latestQr?.qrData || "").trim();
-
     if (!qrData) {
       setNotice(markNotice, "No active QR is available.", "error");
       return;
     }
 
-    try {
-      scanBtn.disabled = true;
-      setNotice(markNotice, "Scanning live QR...", "info");
-      const result = await api("/attendance/mark", { method: "POST", body: { qrData } });
-      const message = typeof result === "string" ? result : "Attendance marked";
-      const isSuccess = /success|already marked/i.test(message);
+    if (attendanceScanFxState.active) {
+      return;
+    }
 
-      setNotice(markNotice, message, isSuccess ? "success" : "error");
+    attendanceScanFxState.active = true;
+    scanBtn.disabled = true;
+    showAttendanceScanOverlay(document.querySelector(".forum-qr-preview img"));
+    setNotice(markNotice, "Scanning displayed QR...", "info");
+
+    try {
+      attendanceScanFxState.timerId = setTimeout(async () => {
+        try {
+          const result = await api("/attendance/mark", { method: "POST", body: { qrData } });
+          const message = typeof result === "string" ? result : "Attendance marked";
+          const isSuccess = /success|already marked/i.test(message);
+          setNotice(markNotice, message, isSuccess ? "success" : "error");
+          resetScannerUi();
+        } catch (err) {
+          resetScannerUi();
+          setNotice(markNotice, err.message || "Unable to process attendance scan.", "error");
+        }
+      }, 1400);
     } catch (err) {
-      setNotice(markNotice, err.message, "error");
-    } finally {
-      scanBtn.disabled = false;
+      resetScannerUi();
+      setNotice(markNotice, err.message || "Unable to start scan animation.", "error");
     }
   });
 }
@@ -1125,6 +1236,7 @@ function attendanceQrForumPost(latestQr, role) {
   const facultyName = escapeHtml(latestQr.facultyName || "Floor Faculty");
   const floorNo = escapeHtml(latestQr.floorNo || "-");
   const generatedAt = escapeHtml(formatForumTime(latestQr.createdAt));
+  const expiresAt = escapeHtml(formatForumTime(latestQr.expiresAt));
   const qrImage = latestQr.qrImageDataUrl
     ? `<img src="${escapeHtml(latestQr.qrImageDataUrl)}" alt="Attendance QR code" />`
     : `<p>QR image is not available.</p>`;
@@ -1142,6 +1254,7 @@ function attendanceQrForumPost(latestQr, role) {
           <div class="qr-action-col">
             <h4>Attendance QR</h4>
             <p>Floor ${floorNo}</p>
+            <p>Valid for 1 hour${expiresAt ? ` until ${expiresAt}` : ""}</p>
             ${role === "STUDENT"
               ? `<button id="scanQrBtn" type="button">Scan QR</button>`
               : `<span class="badge">Active QR</span>`}

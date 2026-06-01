@@ -15,4 +15,5 @@ public class AttendanceQrSessionDto {
     private String qrData;
     private String qrImageDataUrl;
     private LocalDateTime createdAt;
+    private LocalDateTime expiresAt;
 }

@@ -158,6 +158,45 @@ function formatReadableDateTime(value) {
   return `${date}, ${time}`;
 }
 
+function parseLocalDateTime(value) {
+  if (!value) return null;
+
+  const rawValue = String(value).trim();
+  const parts = rawValue.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (parts) {
+    return new Date(
+      Number(parts[1]),
+      Number(parts[2]) - 1,
+      Number(parts[3]),
+      Number(parts[4]),
+      Number(parts[5]),
+      Number(parts[6] || 0)
+    );
+  }
+
+  const parsed = new Date(rawValue);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatReadableMinuteDateTime(value) {
+  if (!value) return "-";
+
+  const rawValue = String(value).trim();
+  const dateValue = parseLocalDateTime(rawValue);
+
+  if (!dateValue) {
+    return rawValue.replace("T", " ").replace(/:\d{2}(?:\.\d+)?$/, "");
+  }
+
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(dateValue);
+}
+
 const attendanceScannerState = {
   stream: null,
   rafId: null,
@@ -560,7 +599,6 @@ function App() {
         <header className="content-head">
           <div>
             <h1>{FEATURES[activeFeature] || "Dashboard"}</h1>
-            <p>Manage hostel operations from a single role-based workspace.</p>
           </div>
           <button className="menu-toggle" onClick={() => setMenuOpen((prev) => !prev)}>Menu</button>
         </header>
@@ -1451,23 +1489,48 @@ function renderMenu(root) {
   const role = state.session.role;
   const canEdit = role === "ADMIN";
   root.innerHTML = `
+    <div id="menuNotice"></div>
     ${canEdit ? `
-      <form id="menuForm" class="form-grid">
-        <h3>Add Menu</h3>
-        <label>Day</label><input name="days" required />
-        <label>Breakfast</label><input name="breakfast" required />
-        <label>Lunch</label><input name="lunch" required />
-        <label>Snacks</label><input name="snacks" required />
-        <label>Dinner</label><input name="dinner" required />
-        <button type="submit">Save Menu</button>
+      <form id="menuEditForm" class="menu-edit-panel" hidden>
+        <div class="menu-edit-head">
+          <span class="badge">ADMIN</span>
+          <div>
+            <h3>Edit Menu</h3>
+            <p>Update the selected day's food schedule.</p>
+          </div>
+        </div>
+        <input name="id" type="hidden" />
+        <div class="menu-edit-grid">
+          <label>Day<input name="days" required readonly /></label>
+          <label>Breakfast<input name="breakfast" required /></label>
+          <label>Lunch<input name="lunch" required /></label>
+          <label>Snacks<input name="snacks" required /></label>
+          <label>Dinner<input name="dinner" required /></label>
+        </div>
+        <div class="menu-edit-actions">
+          <button type="submit">Save Changes</button>
+          <button type="button" class="ghost" id="cancelMenuEdit">Cancel</button>
+        </div>
       </form>
     ` : ""}
-    <div id="menuNotice"></div>
     <div id="menuTable"></div>
   `;
 
   const notice = document.getElementById("menuNotice");
   const tableRoot = document.getElementById("menuTable");
+  const editForm = canEdit ? document.getElementById("menuEditForm") : null;
+
+  const openMenuEditor = (row) => {
+    editForm.elements.id.value = row.id;
+    editForm.elements.days.value = row.days || "";
+    editForm.elements.breakfast.value = row.breakfast || "";
+    editForm.elements.lunch.value = row.lunch || "";
+    editForm.elements.snacks.value = row.snacks || "";
+    editForm.elements.dinner.value = row.dinner || "";
+    editForm.hidden = false;
+    editForm.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    editForm.elements.breakfast.focus();
+  };
 
   const load = async () => {
     try {
@@ -1475,29 +1538,9 @@ function renderMenu(root) {
       tableRoot.innerHTML = menuTable(rows, canEdit);
       if (canEdit) {
         tableRoot.querySelectorAll("[data-update-menu]").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const row = JSON.parse(btn.dataset.updateMenu);
-            const breakfast = prompt("Breakfast", row.breakfast || "");
-            const lunch = prompt("Lunch", row.lunch || "");
-            const snacks = prompt("Snacks", row.snacks || "");
-            const dinner = prompt("Dinner", row.dinner || "");
-            if ([breakfast, lunch, snacks, dinner].some((x) => x === null)) return;
-            try {
-              await api(`/menu/${row.id}`, {
-                method: "PUT",
-                body: {
-                  days: row.days,
-                  breakfast,
-                  lunch,
-                  snacks,
-                  dinner
-                }
-              });
-              setNotice(notice, "Menu updated", "success");
-              await load();
-            } catch (err) {
-              setNotice(notice, err.message, "error");
-            }
+          btn.addEventListener("click", () => {
+            const row = JSON.parse(decodeURIComponent(btn.dataset.updateMenu));
+            openMenuEditor(row);
           });
         });
       }
@@ -1507,16 +1550,29 @@ function renderMenu(root) {
   };
 
   if (canEdit) {
-    document.getElementById("menuForm").addEventListener("submit", async (e) => {
+    document.getElementById("cancelMenuEdit").addEventListener("click", () => {
+      editForm.reset();
+      editForm.hidden = true;
+    });
+
+    editForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
+      const values = Object.fromEntries(fd.entries());
       try {
-        await api("/menu", {
-          method: "POST",
-          body: Object.fromEntries(fd.entries())
+        await api(`/menu/${values.id}`, {
+          method: "PUT",
+          body: {
+            days: values.days,
+            breakfast: values.breakfast,
+            lunch: values.lunch,
+            snacks: values.snacks,
+            dinner: values.dinner
+          }
         });
         e.target.reset();
-        setNotice(notice, "Menu added", "success");
+        editForm.hidden = true;
+        setNotice(notice, "Menu updated", "success");
         await load();
       } catch (err) {
         setNotice(notice, err.message, "error");
@@ -1538,7 +1594,7 @@ function menuTable(rows, canEdit) {
         <td>${m.lunch || ""}</td>
         <td>${m.snacks || ""}</td>
         <td>${m.dinner || ""}</td>
-        ${canEdit ? `<td><button data-update-menu='${JSON.stringify(m).replace(/'/g, "&#39;")}'>Edit</button></td>` : ""}
+        ${canEdit ? `<td><button data-update-menu="${escapeHtml(encodeURIComponent(JSON.stringify(m)))}">Edit</button></td>` : ""}
       </tr>
     `
     )
@@ -1579,7 +1635,6 @@ function renderComplaints(root) {
     <div class="complaint-filter-panel">
       <div class="complaint-filter-head">
         <h4>Filter Complaints</h4>
-        <p>Filter by calendar date, last week, or last month.</p>
       </div>
       <div class="complaint-filter-grid">
         <div class="complaint-filter-field">
@@ -1712,7 +1767,7 @@ function renderComplaints(root) {
   const loadComplaints = async () => {
     try {
       const rows = await api(endpoint);
-      complaintState.rows = rows;
+      complaintState.rows = sortComplaintsNewest(rows);
       renderFilteredComplaints();
     } catch (err) {
       setNotice(notice, err.message, "error");
@@ -1856,6 +1911,17 @@ function complaintCards(rows, canUpdate, role, regNo) {
     .join("");
 }
 
+function sortComplaintsNewest(rows) {
+  return [...rows].sort((a, b) => {
+    const aTime = parseLocalDateTime(a?.createdAt)?.getTime() || 0;
+    const bTime = parseLocalDateTime(b?.createdAt)?.getTime() || 0;
+    if (aTime !== bTime) {
+      return bTime - aTime;
+    }
+    return Number(b?.id || 0) - Number(a?.id || 0);
+  });
+}
+
 function complaintIsPublic(complaint) {
   const category = String(complaint?.category || "").toUpperCase();
   return category === "PUBLIC" || category === "GENERAL";
@@ -1914,7 +1980,6 @@ function renderOutpass(root) {
     <div class="complaint-filter-panel">
       <div class="complaint-filter-head">
         <h4>Filter Outpass</h4>
-        <p>Filter by calendar date, last week, or last month.</p>
       </div>
       <div class="complaint-filter-grid">
         <div class="complaint-filter-field">
@@ -2313,7 +2378,6 @@ function renderFeedback(root) {
     <div class="complaint-filter-panel">
       <div class="complaint-filter-head">
         <h4>Filter Feedback</h4>
-        <p>Filter by calendar date, last week, or last month.</p>
       </div>
       <div class="complaint-filter-grid">
         <div class="complaint-filter-field">
@@ -2879,8 +2943,8 @@ function keyLogMarkup(rows, heading) {
       (row) => `<tr>
         <td>${row.keyHolderRole || "-"}</td>
         <td>${row.studentName || "-"}</td>
-        <td>${row.openTime || row.OpenTime || "-"}</td>
-        <td>${row.closeTime || "-"}</td>
+        <td>${escapeHtml(formatReadableMinuteDateTime(row.openTime || row.OpenTime))}</td>
+        <td>${escapeHtml(formatReadableMinuteDateTime(row.closeTime))}</td>
         <td>${row.status || "-"}</td>
       </tr>`
     )

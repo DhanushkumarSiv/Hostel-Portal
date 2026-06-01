@@ -636,6 +636,98 @@ textarea:focus {
   justify-self: start;
 }
 
+.attendance-confirm-open {
+  overflow: hidden;
+}
+
+.attendance-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1250;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(8, 13, 24, 0.56);
+  backdrop-filter: blur(10px);
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.attendance-confirm-overlay.active {
+  opacity: 1;
+}
+
+.attendance-confirm-dialog {
+  width: min(92vw, 460px);
+  display: grid;
+  grid-template-columns: 54px 1fr;
+  gap: 16px;
+  align-items: start;
+  padding: 22px;
+  border-radius: 24px;
+  background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+  border: 1px solid rgba(220, 232, 243, 0.95);
+  box-shadow: 0 26px 60px rgba(13, 22, 38, 0.28);
+  transform: translateY(18px) scale(0.96);
+  opacity: 0;
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.attendance-confirm-overlay.active .attendance-confirm-dialog {
+  transform: translateY(0) scale(1);
+  opacity: 1;
+}
+
+.attendance-confirm-icon {
+  width: 54px;
+  height: 54px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: #9d5b00;
+  background: linear-gradient(180deg, #fff4db 0%, #ffe3a6 100%);
+  border: 1px solid #f5c96a;
+}
+
+.attendance-confirm-body {
+  display: grid;
+  gap: 10px;
+}
+
+.attendance-confirm-body h3 {
+  font-size: 1.12rem;
+  color: var(--ink);
+}
+
+.attendance-confirm-body p {
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.attendance-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.attendance-confirm-actions button {
+  min-width: 110px;
+}
+
+.attendance-confirm-actions .ghost {
+  background: #edf3fa;
+  color: var(--ink);
+  border: 1px solid #d9e4f1;
+}
+
+.attendance-confirm-actions .ghost:hover {
+  background: #e5edf7;
+}
+
 .attendance-scan-overlay {
   position: fixed;
   inset: 0;
@@ -892,7 +984,7 @@ th {
 
 .attendance-filter-bar {
   display: grid;
-  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px;
   margin: 8px 0 4px;
 }

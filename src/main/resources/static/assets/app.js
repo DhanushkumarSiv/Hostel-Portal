@@ -218,6 +218,12 @@ const attendanceScanFxState = {
   timerId: null
 };
 
+const attendanceConfirmState = {
+  active: false,
+  resolve: null,
+  escHandler: null
+};
+
 const featureIntervals = [];
 
 function registerFeatureInterval(id) {
@@ -328,6 +334,113 @@ function stopAttendanceScanFx() {
     attendanceScanFxState.timerId = null;
   }
   hideAttendanceScanOverlay();
+}
+
+function ensureAttendanceConfirmDialog() {
+  let overlay = document.getElementById("attendanceConfirmOverlay");
+  if (overlay) {
+    return overlay;
+  }
+
+  overlay = document.createElement("div");
+  overlay.id = "attendanceConfirmOverlay";
+  overlay.className = "attendance-confirm-overlay";
+  overlay.hidden = true;
+  overlay.innerHTML = `
+    <div class="attendance-confirm-dialog" role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="attendanceConfirmTitle" aria-describedby="attendanceConfirmMessage">
+      <div class="attendance-confirm-icon">!</div>
+      <div class="attendance-confirm-body">
+        <h3 id="attendanceConfirmTitle">Confirm action</h3>
+        <p id="attendanceConfirmMessage">Are you sure you want to continue?</p>
+        <div class="attendance-confirm-actions">
+          <button type="button" class="ghost" data-attendance-confirm-cancel>Cancel</button>
+          <button type="button" data-attendance-confirm-ok>Confirm</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const dialog = overlay.querySelector(".attendance-confirm-dialog");
+  const titleEl = overlay.querySelector("#attendanceConfirmTitle");
+  const messageEl = overlay.querySelector("#attendanceConfirmMessage");
+  const cancelBtn = overlay.querySelector("[data-attendance-confirm-cancel]");
+  const confirmBtn = overlay.querySelector("[data-attendance-confirm-ok]");
+
+  const finish = (value) => {
+    if (!attendanceConfirmState.active) {
+      return;
+    }
+
+    const resolve = attendanceConfirmState.resolve;
+    attendanceConfirmState.active = false;
+    attendanceConfirmState.resolve = null;
+
+    if (attendanceConfirmState.escHandler) {
+      document.removeEventListener("keydown", attendanceConfirmState.escHandler);
+      attendanceConfirmState.escHandler = null;
+    }
+
+    overlay.classList.remove("active");
+    document.body.classList.remove("attendance-confirm-open");
+
+    window.setTimeout(() => {
+      overlay.hidden = true;
+    }, 180);
+
+    if (typeof resolve === "function") {
+      resolve(value);
+    }
+  };
+
+  cancelBtn.addEventListener("click", () => finish(false));
+  confirmBtn.addEventListener("click", () => finish(true));
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      finish(false);
+    }
+  });
+
+  overlay.__setAttendanceConfirmContent = (title, message, confirmText, cancelText) => {
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+    confirmBtn.textContent = confirmText;
+    cancelBtn.textContent = cancelText;
+    dialog.focus();
+  };
+
+  overlay.__finishAttendanceConfirm = finish;
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+function showAttendanceConfirmDialog({
+  title = "Confirm action",
+  message = "Are you sure you want to continue?",
+  confirmText = "Confirm",
+  cancelText = "Cancel"
+} = {}) {
+  const overlay = ensureAttendanceConfirmDialog();
+
+  if (attendanceConfirmState.active) {
+    return Promise.resolve(false);
+  }
+
+  overlay.__setAttendanceConfirmContent(title, message, confirmText, cancelText);
+  overlay.hidden = false;
+  document.body.classList.add("attendance-confirm-open");
+
+  return new Promise((resolve) => {
+    attendanceConfirmState.active = true;
+    attendanceConfirmState.resolve = resolve;
+    attendanceConfirmState.escHandler = (event) => {
+      if (event.key === "Escape") {
+        overlay.__finishAttendanceConfirm(false);
+      }
+    };
+
+    document.addEventListener("keydown", attendanceConfirmState.escHandler);
+    requestAnimationFrame(() => overlay.classList.add("active"));
+  });
 }
 
 function stopFeedbackCamera({ clearCapture = false } = {}) {
@@ -956,6 +1069,7 @@ function renderAttendance(root) {
   const canMark = role === "STUDENT";
   const canUseForum = canGenerate || canMark;
   const canViewSummary = role === "ADMIN" || role === "FACULTY";
+  const canFilterFloor = role === "ADMIN";
   const summaryEndpoint = role === "ADMIN" ? "/attendance/daily/admin" : "/attendance/daily/faculty";
 
   root.innerHTML = `
@@ -984,12 +1098,14 @@ function renderAttendance(root) {
           <button id="loadAttendanceSummaryBtn">Load Today's Attendance</button>
         </div>
         <div class="attendance-filter-bar">
+          ${canFilterFloor ? `
           <div class="attendance-filter-group">
             <label for="attendanceFloorFilter">Floor</label>
             <select id="attendanceFloorFilter" disabled>
               <option value="ALL">All Floors</option>
             </select>
           </div>
+          ` : ""}
           <div class="attendance-filter-group">
             <label for="attendanceStatusFilter">Status</label>
             <select id="attendanceStatusFilter">
@@ -1035,6 +1151,16 @@ function renderAttendance(root) {
 
     if (generateBtn) {
       generateBtn.addEventListener("click", async () => {
+        const confirmed = await showAttendanceConfirmDialog({
+          title: "Generate attendance QR?",
+          message: "This QR will be active for 1 hour only. Confirm to generate it now.",
+          confirmText: "Generate QR",
+          cancelText: "Cancel"
+        });
+        if (!confirmed) {
+          return;
+        }
+
         try {
           generateBtn.disabled = true;
           setNotice(forumNotice, "Generating QR for your floor...", "info");
@@ -1117,7 +1243,7 @@ function renderAttendance(root) {
       const statusValue = summaryState.filters.status;
 
       const rows = students.filter((student) => {
-        const matchesFloor = floorValue === "ALL" || String(student.floorNo || "").trim() === floorValue;
+        const matchesFloor = !canFilterFloor || floorValue === "ALL" || String(student.floorNo || "").trim() === floorValue;
         const matchesStatus = statusValue === "ALL" || String(student.attendance || "").trim().toUpperCase() === statusValue;
         return matchesFloor && matchesStatus;
       });
@@ -1142,11 +1268,11 @@ function renderAttendance(root) {
 
       const view = filteredSummary();
       const rows = Array.isArray(view?.students) ? view.students : [];
-      const floorLabel = summaryState.filters.floor === "ALL" ? "all floors" : `floor ${summaryState.filters.floor}`;
-      const statusLabel = summaryState.filters.status === "ALL" ? "all statuses" : summaryState.filters.status.toLowerCase();
 
       if (!rows.length) {
-        summaryContent.innerHTML = `<p class="attendance-summary-empty">No attendance rows match ${floorLabel} and ${statusLabel}.</p>`;
+        summaryContent.innerHTML = canFilterFloor
+          ? `<p class="attendance-summary-empty">No attendance rows match the selected floor and status.</p>`
+          : `<p class="attendance-summary-empty">No attendance rows match the selected status.</p>`;
         return;
       }
 
@@ -1154,7 +1280,7 @@ function renderAttendance(root) {
     };
 
     const syncFloorFilter = () => {
-      if (!floorFilter) return;
+      if (!canFilterFloor || !floorFilter) return;
 
       const floors = uniqueFloors(summaryState.data?.students || []);
       floorFilter.innerHTML = `<option value="ALL">All Floors</option>${
@@ -1182,10 +1308,12 @@ function renderAttendance(root) {
     };
 
     summaryBtn.addEventListener("click", loadSummary);
-    floorFilter?.addEventListener("change", () => {
-      summaryState.filters.floor = floorFilter.value || "ALL";
-      renderSummary();
-    });
+    if (canFilterFloor && floorFilter) {
+      floorFilter.addEventListener("change", () => {
+        summaryState.filters.floor = floorFilter.value || "ALL";
+        renderSummary();
+      });
+    }
     statusFilter?.addEventListener("change", () => {
       summaryState.filters.status = statusFilter.value || "ALL";
       renderSummary();

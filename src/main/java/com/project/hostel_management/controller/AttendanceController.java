@@ -1,5 +1,7 @@
 package com.project.hostel_management.controller;
 
+import com.project.hostel_management.dto.AttendanceForumDto;
+import com.project.hostel_management.dto.AttendanceForumMessageDto;
 import com.project.hostel_management.dto.AttendanceSummaryDto;
 import com.project.hostel_management.service.AttendanceService;
 import com.project.hostel_management.service.SecurityUtil;
@@ -73,7 +75,30 @@ public class AttendanceController {
                 student.getRegNo(),
                 student.getName(),
                 student.getRoomNo(),
+                student.getFloorNo(),
                 ipAddress
+        );
+    }
+
+    @GetMapping("/forum")
+    public AttendanceForumDto getForum() {
+        if (!securityUtil.hasAnyRole("STUDENT", "FACULTY")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        return service.getForum(securityUtil.getCurrentRole(), securityUtil.getCurrentRegNo());
+    }
+
+    @PostMapping("/forum/messages")
+    public AttendanceForumMessageDto postForumMessage(@RequestBody Map<String, String> body) {
+        if (!securityUtil.hasAnyRole("STUDENT", "FACULTY")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        return service.postForumMessage(
+                securityUtil.getCurrentRole(),
+                securityUtil.getCurrentRegNo(),
+                body.get("message")
         );
     }
 

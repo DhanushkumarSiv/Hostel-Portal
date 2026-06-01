@@ -33,7 +33,8 @@ public class IndoorCourtController {
     public String scanQR(@RequestParam(required = false) String studentId,
                          @RequestParam(required = false) String studentName,
                          @RequestParam(required = false) String roomNo,
-                         @RequestParam(required = false) String mobileNo) {
+                         @RequestParam(required = false) String mobileNo,
+                         @RequestBody(required = false) Map<String, String> body) {
         if (!securityUtil.hasAnyRole("STUDENT", "FACULTY")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
@@ -55,12 +56,21 @@ public class IndoorCourtController {
             mobileNo = "";
         }
 
-        return service.scanIndoorCourtQR(currentRole, studentId, studentName, roomNo, mobileNo);
+        String qrData = body == null ? null : body.get("qrData");
+        return service.scanIndoorCourtQR(currentRole, studentId, studentName, roomNo, mobileNo, qrData);
+    }
+
+    @GetMapping("/qr")
+    public Map<String, String> getPermanentQr() {
+        if (!securityUtil.hasAnyRole("ADMIN")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        return service.getPermanentQr();
     }
 
     @GetMapping("/status")
     public Map<String, Object> getStatus() {
-        if (!securityUtil.hasAnyRole("ADMIN")) {
+        if (!securityUtil.hasAnyRole("ADMIN", "STUDENT", "FACULTY")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
         return service.getIndoorCourtStatusDetails();

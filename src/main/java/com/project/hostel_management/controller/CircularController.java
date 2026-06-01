@@ -43,7 +43,7 @@ public class CircularController {
 
         throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
     }
-
+    
     @GetMapping("/all")
     public List<Circular> getAllCirculars() {
         String role = securityUtil.getCurrentRole();

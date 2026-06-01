@@ -56,6 +56,16 @@ function parseMaybeJson(text) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;"
+  }[char]));
+}
+
 async function api(path, options = {}) {
   const session = state.session;
   const opts = {
@@ -91,7 +101,7 @@ async function api(path, options = {}) {
 }
 
 function setNotice(container, message, kind = "info") {
-  container.innerHTML = `<div class="notice ${kind}">${message}</div>`;
+  container.innerHTML = `<div class="notice ${kind}">${escapeHtml(message)}</div>`;
 }
 
 function roleBadge(role) {
@@ -121,12 +131,47 @@ function formatDateTimeParts(value) {
   return { date, time, display: `${date} ${time}` };
 }
 
+function formatReadableDateTime(value) {
+  if (!value) return "Date not available";
+
+  const rawValue = String(value).trim();
+  const normalizedValue = rawValue.replace(
+    /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?$/,
+    "$1"
+  );
+  const parsed = new Date(normalizedValue);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return rawValue.replace("T", " ").replace(/\.\d+$/, "");
+  }
+
+  const date = new Intl.DateTimeFormat("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric"
+  }).format(parsed);
+  const time = new Intl.DateTimeFormat("en-IN", {
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(parsed);
+
+  return `${date}, ${time}`;
+}
+
 const attendanceScannerState = {
   stream: null,
   rafId: null,
   active: false,
   decodeInFlight: false,
-  lastDecodeAt: 0
+  lastDecodeAt: 0,
+  barcodeDetector: null,
+  failedDecodes: 0
+};
+
+const feedbackPhotoState = {
+  stream: null,
+  capturedFile: null,
+  previewUrl: ""
 };
 
 const featureIntervals = [];
@@ -146,6 +191,8 @@ function stopAttendanceScanner() {
   attendanceScannerState.active = false;
   attendanceScannerState.decodeInFlight = false;
   attendanceScannerState.lastDecodeAt = 0;
+  attendanceScannerState.barcodeDetector = null;
+  attendanceScannerState.failedDecodes = 0;
 
   if (attendanceScannerState.rafId) {
     cancelAnimationFrame(attendanceScannerState.rafId);
@@ -158,7 +205,72 @@ function stopAttendanceScanner() {
   }
 }
 
-async function startAttendanceScanner(videoEl, onDetect) {
+function stopFeedbackCamera({ clearCapture = false } = {}) {
+  if (feedbackPhotoState.stream) {
+    feedbackPhotoState.stream.getTracks().forEach((track) => track.stop());
+    feedbackPhotoState.stream = null;
+  }
+
+  if (clearCapture) {
+    feedbackPhotoState.capturedFile = null;
+    if (feedbackPhotoState.previewUrl) {
+      URL.revokeObjectURL(feedbackPhotoState.previewUrl);
+      feedbackPhotoState.previewUrl = "";
+    }
+  }
+}
+
+async function startFeedbackCamera(videoEl) {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error("Camera access is not supported in this browser.");
+  }
+
+  stopFeedbackCamera();
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1280 },
+      height: { ideal: 720 }
+    },
+    audio: false
+  });
+
+  feedbackPhotoState.stream = stream;
+  videoEl.srcObject = stream;
+  videoEl.setAttribute("playsinline", "true");
+  videoEl.muted = true;
+  await videoEl.play();
+}
+
+async function captureFeedbackPhoto(videoEl) {
+  if (!videoEl.videoWidth || !videoEl.videoHeight) {
+    throw new Error("Camera is still starting. Try again in a moment.");
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = videoEl.videoWidth;
+  canvas.height = videoEl.videoHeight;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("Unable to capture photo.");
+  }
+
+  ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+
+  const blob = await new Promise((resolve) => {
+    canvas.toBlob(resolve, "image/jpeg", 0.92);
+  });
+
+  if (!blob) {
+    throw new Error("Unable to capture photo.");
+  }
+
+  return new File([blob], `food-feedback-${Date.now()}.jpg`, { type: "image/jpeg" });
+}
+
+async function startAttendanceScanner(videoEl, onDetect, options = {}) {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("Camera access is not supported in this browser.");
   }
@@ -166,22 +278,53 @@ async function startAttendanceScanner(videoEl, onDetect) {
   stopAttendanceScanner();
 
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: { ideal: "environment" } },
+    video: {
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1280 },
+      height: { ideal: 720 }
+    },
     audio: false
   });
 
   videoEl.srcObject = stream;
+  videoEl.setAttribute("playsinline", "true");
+  videoEl.muted = true;
   await videoEl.play();
 
   attendanceScannerState.stream = stream;
   attendanceScannerState.active = true;
 
+  if ("BarcodeDetector" in window) {
+    try {
+      attendanceScannerState.barcodeDetector = new BarcodeDetector({ formats: ["qr_code"] });
+    } catch (err) {
+      attendanceScannerState.barcodeDetector = null;
+    }
+  }
+
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const cropCanvas = document.createElement("canvas");
+  const cropCtx = cropCanvas.getContext("2d", { willReadFrequently: true });
 
-  if (!ctx) {
+  if (!ctx || !cropCtx) {
     throw new Error("Unable to initialize QR scanner.");
   }
+
+  const decodeFrame = async (imageData) => {
+    const response = await api("/qr/decode", {
+      method: "POST",
+      body: { imageData }
+    });
+
+    return String(response?.qrData || "").trim();
+  };
+
+  const setScaledCanvasSize = (targetCanvas, sourceWidth, sourceHeight, maxSize) => {
+    const scale = Math.min(1, maxSize / Math.max(sourceWidth, sourceHeight));
+    targetCanvas.width = Math.max(1, Math.round(sourceWidth * scale));
+    targetCanvas.height = Math.max(1, Math.round(sourceHeight * scale));
+  };
 
   const scan = async () => {
     if (!attendanceScannerState.active) {
@@ -189,33 +332,62 @@ async function startAttendanceScanner(videoEl, onDetect) {
     }
 
     if (videoEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !attendanceScannerState.decodeInFlight) {
-      if (canvas.width !== videoEl.videoWidth || canvas.height !== videoEl.videoHeight) {
-        canvas.width = videoEl.videoWidth;
-        canvas.height = videoEl.videoHeight;
-      }
-
       const now = Date.now();
-      if (now - attendanceScannerState.lastDecodeAt >= 350) {
+      if (now - attendanceScannerState.lastDecodeAt >= 250) {
         attendanceScannerState.lastDecodeAt = now;
-        ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
 
         try {
           attendanceScannerState.decodeInFlight = true;
+          let qrData = "";
 
-          const imageData = canvas.toDataURL("image/jpeg", 0.7);
-          const response = await api("/attendance/decode-qr", {
-            method: "POST",
-            body: { imageData }
-          });
+          if (attendanceScannerState.barcodeDetector) {
+            try {
+              const barcodes = await attendanceScannerState.barcodeDetector.detect(videoEl);
+              qrData = String(barcodes?.[0]?.rawValue || "").trim();
+            } catch (err) {
+              qrData = "";
+            }
+          }
 
-          const qrData = String(response?.qrData || "").trim();
+          if (!qrData) {
+            setScaledCanvasSize(canvas, videoEl.videoWidth, videoEl.videoHeight, 960);
+            ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+            qrData = await decodeFrame(canvas.toDataURL("image/jpeg", 0.95));
+          }
+
+          if (!qrData) {
+            const sourceSize = Math.min(videoEl.videoWidth, videoEl.videoHeight);
+            const sourceX = Math.max(0, Math.round((videoEl.videoWidth - sourceSize) / 2));
+            const sourceY = Math.max(0, Math.round((videoEl.videoHeight - sourceSize) / 2));
+            setScaledCanvasSize(cropCanvas, sourceSize, sourceSize, 900);
+            cropCtx.drawImage(
+              videoEl,
+              sourceX,
+              sourceY,
+              sourceSize,
+              sourceSize,
+              0,
+              0,
+              cropCanvas.width,
+              cropCanvas.height
+            );
+            qrData = await decodeFrame(cropCanvas.toDataURL("image/jpeg", 0.98));
+          }
+
           if (qrData) {
             stopAttendanceScanner();
             await onDetect(qrData);
             return;
           }
+          attendanceScannerState.failedDecodes += 1;
+          if (options.onProgress && attendanceScannerState.failedDecodes % 8 === 0) {
+            options.onProgress("Still scanning. Hold the QR steady inside the camera box.");
+          }
         } catch (err) {
-          // Ignore decode miss/error and keep scanning.
+          attendanceScannerState.failedDecodes += 1;
+          if (options.onProgress && attendanceScannerState.failedDecodes % 6 === 0) {
+            options.onProgress("Camera is open, but QR was not readable yet.");
+          }
         } finally {
           attendanceScannerState.decodeInFlight = false;
         }
@@ -277,6 +449,7 @@ function App() {
   useEffect(() => {
     if (!session) {
       stopAttendanceScanner();
+      stopFeedbackCamera({ clearCapture: true });
       return;
     }
 
@@ -291,6 +464,7 @@ function App() {
 
   const handleLogout = () => {
     stopAttendanceScanner();
+    stopFeedbackCamera({ clearCapture: true });
     saveSession(null);
     setSession(null);
     setActiveFeature("dashboard");
@@ -398,6 +572,7 @@ function App() {
 
 function renderFeature(feature) {
   stopAttendanceScanner();
+  stopFeedbackCamera({ clearCapture: true });
   clearFeatureIntervals();
 
   const root = document.getElementById("featureRoot");
@@ -652,19 +827,27 @@ function renderAttendance(root) {
   const role = state.session.role;
   const canGenerate = role === "FACULTY";
   const canMark = role === "STUDENT";
+  const canUseForum = canGenerate || canMark;
   const canViewSummary = role === "ADMIN" || role === "FACULTY";
   const summaryEndpoint = role === "ADMIN" ? "/attendance/daily/admin" : "/attendance/daily/faculty";
 
   root.innerHTML = `
-    ${canGenerate ? `
-      <div class="panel-lite">
-        <h3>Generate QR (Faculty)</h3>
-        <button id="generateQrBtn">Generate Attendance QR</button>
-        <div id="qrNotice"></div>
-        <div id="generatedQrPreview" class="qr-preview">
-          <p>Tap generate to show a new attendance QR.</p>
+    ${canUseForum ? `
+      <div class="attendance-forum">
+        <div class="attendance-forum-head">
+          <div>
+            <h3>Floor Attendance Forum</h3>
+            <p>${canGenerate ? "Generate the floor QR and answer scan queries." : "Scan the live floor QR and ask scan queries."}</p>
+          </div>
+          ${canGenerate ? `<button id="generateQrBtn" type="button">Generate Floor QR</button>` : ""}
         </div>
-        <textarea id="generatedQr" rows="3" readonly placeholder="Generated attendance payload appears here"></textarea>
+        <div id="qrNotice"></div>
+        <div id="attendanceForumContent" class="attendance-forum-content"></div>
+        <form id="attendanceForumMessageForm" class="forum-composer">
+          <label>${canGenerate ? "Reply in discussion" : "Ask a scanning query"}</label>
+          <textarea name="message" rows="3" maxlength="1000" required placeholder="${canGenerate ? "Type a reply for your floor students" : "Type your QR scanning query"}"></textarea>
+          <button type="submit">${canGenerate ? "Post Reply" : "Post Query"}</button>
+        </form>
       </div>
     ` : ""}
 
@@ -673,40 +856,193 @@ function renderAttendance(root) {
         <div class="actions">
           <button id="loadAttendanceSummaryBtn">Load Today's Attendance</button>
         </div>
+        <div class="attendance-filter-bar">
+          <div class="attendance-filter-group">
+            <label for="attendanceFloorFilter">Floor</label>
+            <select id="attendanceFloorFilter" disabled>
+              <option value="ALL">All Floors</option>
+            </select>
+          </div>
+          <div class="attendance-filter-group">
+            <label for="attendanceStatusFilter">Status</label>
+            <select id="attendanceStatusFilter">
+              <option value="ALL">All Status</option>
+              <option value="PRESENT">Present</option>
+              <option value="ABSENT">Absent</option>
+              <option value="NOT TAKEN">Not Taken</option>
+            </select>
+          </div>
+        </div>
         <div id="attendanceSummaryNotice"></div>
         <div id="attendanceSummaryContent"></div>
       </div>
     ` : ""}
-
-    ${canMark ? `
-      <div class="panel-lite">
-        <h3>Scan QR (Student)</h3>
-        <div class="actions">
-          <button id="scanQrBtn" type="button">Scan QR</button>
-          <button id="stopScanBtn" type="button" class="ghost" disabled>Stop Camera</button>
-        </div>
-        <video id="scanVideo" class="scan-video" playsinline muted></video>
-        <p class="scan-help">Allow camera permission, point to the faculty QR, and attendance will be marked automatically.</p>
-        <form id="markAttendanceForm" class="form-grid">
-          <label>QR Data</label>
-          <textarea name="qrData" required rows="3" placeholder="Paste scanned QR payload"></textarea>
-          <button type="submit">Mark Attendance Manually</button>
-        </form>
-        <div id="markNotice"></div>
-      </div>
-    ` : ""}
   `;
+
+  if (canUseForum) {
+    const forumNotice = document.getElementById("qrNotice");
+    const forumContent = document.getElementById("attendanceForumContent");
+    const messageForm = document.getElementById("attendanceForumMessageForm");
+    const generateBtn = document.getElementById("generateQrBtn");
+    let currentForum = null;
+
+    const renderForum = () => {
+      forumContent.innerHTML = attendanceForumMarkup(currentForum, role);
+      bindAttendanceForumActions(currentForum, role);
+    };
+
+    const loadForum = async (showLoading = false) => {
+      try {
+        if (showLoading) {
+          setNotice(forumNotice, "Loading attendance forum...", "info");
+        }
+        currentForum = await api("/attendance/forum");
+        renderForum();
+        if (showLoading) {
+          setNotice(forumNotice, `Loaded Floor ${currentForum?.floorNo || "-"} forum`, "success");
+        }
+      } catch (err) {
+        setNotice(forumNotice, err.message, "error");
+      }
+    };
+
+    if (generateBtn) {
+      generateBtn.addEventListener("click", async () => {
+        try {
+          generateBtn.disabled = true;
+          setNotice(forumNotice, "Generating QR for your floor...", "info");
+          const qr = await api("/attendance/generate-qr");
+          setNotice(forumNotice, `QR generated for Floor ${qr?.floorNo || "-"}`, "success");
+          await loadForum(false);
+        } catch (err) {
+          setNotice(forumNotice, err.message, "error");
+        } finally {
+          generateBtn.disabled = false;
+        }
+      });
+    }
+
+    messageForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const submitBtn = messageForm.querySelector("button[type='submit']");
+      const textarea = messageForm.querySelector("textarea[name='message']");
+      const message = String(new FormData(messageForm).get("message") || "").trim();
+
+      if (!message) {
+        setNotice(forumNotice, "Message is required.", "error");
+        return;
+      }
+
+      try {
+        submitBtn.disabled = true;
+        await api("/attendance/forum/messages", { method: "POST", body: { message } });
+        textarea.value = "";
+        setNotice(forumNotice, "Posted to the attendance forum", "success");
+        await loadForum(false);
+      } catch (err) {
+        setNotice(forumNotice, err.message, "error");
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    loadForum(true);
+    registerFeatureInterval(setInterval(() => loadForum(false), 8000));
+  }
 
   if (canViewSummary) {
     const summaryBtn = document.getElementById("loadAttendanceSummaryBtn");
+    const floorFilter = document.getElementById("attendanceFloorFilter");
+    const statusFilter = document.getElementById("attendanceStatusFilter");
     const summaryNotice = document.getElementById("attendanceSummaryNotice");
     const summaryContent = document.getElementById("attendanceSummaryContent");
+    const summaryState = {
+      data: null,
+      filters: {
+        floor: "ALL",
+        status: "ALL"
+      }
+    };
+
+    const uniqueFloors = (students) => {
+      return Array.from(
+        new Set(
+          students
+            .map((student) => String(student?.floorNo || "").trim())
+            .filter(Boolean)
+        )
+      ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+    };
+
+    const filteredSummary = () => {
+      const source = summaryState.data;
+      if (!source) {
+        return null;
+      }
+
+      const students = Array.isArray(source.students) ? source.students : [];
+      const floorValue = summaryState.filters.floor;
+      const statusValue = summaryState.filters.status;
+
+      const rows = students.filter((student) => {
+        const matchesFloor = floorValue === "ALL" || String(student.floorNo || "").trim() === floorValue;
+        const matchesStatus = statusValue === "ALL" || String(student.attendance || "").trim().toUpperCase() === statusValue;
+        return matchesFloor && matchesStatus;
+      });
+
+      const presentCount = rows.filter((row) => String(row.attendance || "").trim().toUpperCase() === "PRESENT").length;
+      const absentCount = rows.filter((row) => String(row.attendance || "").trim().toUpperCase() === "ABSENT").length;
+
+      return {
+        ...source,
+        presentCount,
+        absentCount,
+        totalStudents: rows.length,
+        students: rows
+      };
+    };
+
+    const renderSummary = () => {
+      if (!summaryState.data) {
+        summaryContent.innerHTML = "";
+        return;
+      }
+
+      const view = filteredSummary();
+      const rows = Array.isArray(view?.students) ? view.students : [];
+      const floorLabel = summaryState.filters.floor === "ALL" ? "all floors" : `floor ${summaryState.filters.floor}`;
+      const statusLabel = summaryState.filters.status === "ALL" ? "all statuses" : summaryState.filters.status.toLowerCase();
+
+      if (!rows.length) {
+        summaryContent.innerHTML = `<p class="attendance-summary-empty">No attendance rows match ${floorLabel} and ${statusLabel}.</p>`;
+        return;
+      }
+
+      summaryContent.innerHTML = attendanceSummaryMarkup(view, role);
+    };
+
+    const syncFloorFilter = () => {
+      if (!floorFilter) return;
+
+      const floors = uniqueFloors(summaryState.data?.students || []);
+      floorFilter.innerHTML = `<option value="ALL">All Floors</option>${
+        floors.map((floor) => `<option value="${escapeHtml(floor)}">${escapeHtml(floor)}</option>`).join("")
+      }`;
+      floorFilter.disabled = floors.length === 0;
+
+      if (summaryState.filters.floor !== "ALL" && !floors.includes(summaryState.filters.floor)) {
+        summaryState.filters.floor = "ALL";
+        floorFilter.value = "ALL";
+      }
+    };
 
     const loadSummary = async () => {
       try {
         setNotice(summaryNotice, "Loading today's attendance...", "info");
         const summary = await api(summaryEndpoint);
-        summaryContent.innerHTML = attendanceSummaryMarkup(summary, role);
+        summaryState.data = summary;
+        syncFloorFilter();
+        renderSummary();
         setNotice(summaryNotice, `Loaded ${summary?.totalStudents || 0} students`, "success");
       } catch (err) {
         setNotice(summaryNotice, err.message, "error");
@@ -714,102 +1050,150 @@ function renderAttendance(root) {
     };
 
     summaryBtn.addEventListener("click", loadSummary);
+    floorFilter?.addEventListener("change", () => {
+      summaryState.filters.floor = floorFilter.value || "ALL";
+      renderSummary();
+    });
+    statusFilter?.addEventListener("change", () => {
+      summaryState.filters.status = statusFilter.value || "ALL";
+      renderSummary();
+    });
     loadSummary();
   }
+}
 
-  if (canGenerate) {
-    const btn = document.getElementById("generateQrBtn");
-    const notice = document.getElementById("qrNotice");
-    const out = document.getElementById("generatedQr");
-    const preview = document.getElementById("generatedQrPreview");
+function bindAttendanceForumActions(forum, role) {
+  const scanBtn = document.getElementById("scanQrBtn");
+  const markNotice = document.getElementById("markNotice");
 
-    btn.addEventListener("click", async () => {
-      try {
-        const qr = await api("/attendance/generate-qr");
-        const qrData = String(qr?.qrData || (typeof qr === "string" ? qr : "")).trim();
-        const qrImageDataUrl = String(qr?.qrImageDataUrl || "").trim();
-
-        out.value = qrData || JSON.stringify(qr);
-
-        if (qrImageDataUrl) {
-          preview.innerHTML = `<img src="${qrImageDataUrl}" alt="Attendance QR code" />`;
-        } else {
-          preview.innerHTML = "<p>QR image is not available.</p>";
-        }
-
-        setNotice(notice, "QR generated successfully", "success");
-      } catch (err) {
-        setNotice(notice, err.message, "error");
-      }
-    });
+  if (!scanBtn || role !== "STUDENT") {
+    return;
   }
 
-  if (canMark) {
-    const form = document.getElementById("markAttendanceForm");
-    const notice = document.getElementById("markNotice");
-    const scanBtn = document.getElementById("scanQrBtn");
-    const stopBtn = document.getElementById("stopScanBtn");
-    const video = document.getElementById("scanVideo");
-    const qrDataInput = form.querySelector("textarea[name='qrData']");
+  scanBtn.addEventListener("click", async () => {
+    const qrData = String(forum?.latestQr?.qrData || "").trim();
 
-    const markAttendanceFromPayload = async (payload) => {
-      const qrData = String(payload || "").trim();
-      if (!qrData) {
-        setNotice(notice, "QR data is empty.", "error");
-        return;
-      }
+    if (!qrData) {
+      setNotice(markNotice, "No active QR is available.", "error");
+      return;
+    }
 
+    try {
+      scanBtn.disabled = true;
+      setNotice(markNotice, "Scanning live QR...", "info");
       const result = await api("/attendance/mark", { method: "POST", body: { qrData } });
       const message = typeof result === "string" ? result : "Attendance marked";
       const isSuccess = /success|already marked/i.test(message);
 
-      setNotice(notice, message, isSuccess ? "success" : "error");
-    };
-
-    const resetCameraButtons = () => {
+      setNotice(markNotice, message, isSuccess ? "success" : "error");
+    } catch (err) {
+      setNotice(markNotice, err.message, "error");
+    } finally {
       scanBtn.disabled = false;
-      stopBtn.disabled = true;
-      video.srcObject = null;
-      video.style.display = "none";
-    };
+    }
+  });
+}
 
-    scanBtn.addEventListener("click", async () => {
-      try {
-        scanBtn.disabled = true;
-        stopBtn.disabled = false;
-        video.style.display = "block";
-        setNotice(notice, "Camera started. Scanning for QR...", "info");
+function attendanceForumMarkup(forum, role) {
+  const floorNo = escapeHtml(forum?.floorNo || "-");
+  const latestQr = forum?.latestQr || null;
+  const messages = Array.isArray(forum?.messages) ? forum.messages : [];
+  const qrPost = latestQr ? attendanceQrForumPost(latestQr, role) : `
+    <div class="forum-empty">
+      <strong>No QR generated yet</strong>
+      <p>The latest floor QR will appear here when faculty generates it.</p>
+    </div>
+  `;
+  const messageItems = messages.length
+    ? messages.map(attendanceForumMessagePost).join("")
+    : `<div class="forum-empty slim"><p>No scan queries yet.</p></div>`;
 
-        await startAttendanceScanner(video, async (decodedValue) => {
-          qrDataInput.value = decodedValue;
-          resetCameraButtons();
-          await markAttendanceFromPayload(decodedValue);
-        });
-      } catch (err) {
-        resetCameraButtons();
-        stopAttendanceScanner();
-        setNotice(notice, err.message || "Unable to start camera scanner.", "error");
-      }
-    });
+  return `
+    <div class="forum-floor-strip">
+      <span class="badge">Floor ${floorNo}</span>
+      <span>${messages.length} discussion ${messages.length === 1 ? "post" : "posts"} today</span>
+    </div>
+    <div class="forum-thread">
+      ${qrPost}
+      ${messageItems}
+    </div>
+    <div id="markNotice"></div>
+  `;
+}
 
-    stopBtn.addEventListener("click", () => {
-      stopAttendanceScanner();
-      resetCameraButtons();
-      setNotice(notice, "Camera stopped.", "info");
-    });
+function attendanceQrForumPost(latestQr, role) {
+  const facultyName = escapeHtml(latestQr.facultyName || "Floor Faculty");
+  const floorNo = escapeHtml(latestQr.floorNo || "-");
+  const generatedAt = escapeHtml(formatForumTime(latestQr.createdAt));
+  const qrImage = latestQr.qrImageDataUrl
+    ? `<img src="${escapeHtml(latestQr.qrImageDataUrl)}" alt="Attendance QR code" />`
+    : `<p>QR image is not available.</p>`;
 
-    resetCameraButtons();
+  return `
+    <article class="forum-post qr-post">
+      <div class="forum-avatar faculty">F</div>
+      <div class="forum-post-body">
+        <div class="forum-meta">
+          <strong>${facultyName}</strong>
+          <span>${generatedAt}</span>
+        </div>
+        <div class="qr-forum-card">
+          <div class="qr-preview forum-qr-preview">${qrImage}</div>
+          <div class="qr-action-col">
+            <h4>Attendance QR</h4>
+            <p>Floor ${floorNo}</p>
+            ${role === "STUDENT"
+              ? `<button id="scanQrBtn" type="button">Scan QR</button>`
+              : `<span class="badge">Active QR</span>`}
+          </div>
+        </div>
+      </div>
+    </article>
+  `;
+}
 
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      try {
-        const payload = String(new FormData(form).get("qrData") || "").trim();
-        await markAttendanceFromPayload(payload);
-      } catch (err) {
-        setNotice(notice, err.message, "error");
-      }
-    });
+function attendanceForumMessagePost(message) {
+  const authorRole = String(message.authorRole || "").toUpperCase();
+  const isFaculty = authorRole === "FACULTY";
+  const authorName = escapeHtml(message.authorName || (isFaculty ? "Faculty" : "Student"));
+  const createdAt = escapeHtml(formatForumTime(message.createdAt));
+  const text = escapeHtml(message.message || "").replace(/\n/g, "<br>");
+  const initial = escapeHtml((authorName.trim()[0] || "?").toUpperCase());
+
+  return `
+    <article class="forum-post">
+      <div class="forum-avatar ${isFaculty ? "faculty" : "student"}">${initial}</div>
+      <div class="forum-post-body">
+        <div class="forum-meta">
+          <strong>${authorName}</strong>
+          <span>${isFaculty ? "Faculty" : "Student"}</span>
+          <span>${createdAt}</span>
+        </div>
+        <p>${text}</p>
+      </div>
+    </article>
+  `;
+}
+
+function formatForumTime(value) {
+  if (!value) {
+    return "";
   }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value);
+  }
+
+  return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function attendanceStatusClass(status) {
+  return String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 function attendanceSummaryMarkup(summary, role) {
@@ -817,6 +1201,7 @@ function attendanceSummaryMarkup(summary, role) {
   const present = Number(summary?.presentCount || 0);
   const absent = Number(summary?.absentCount || 0);
   const total = Number(summary?.totalStudents || students.length || 0);
+  const notTaken = total > 0 && present === 0 && absent === 0 && students.some((s) => s.attendance === "NOT TAKEN");
   const presentAngle = total > 0 ? Math.round((present / total) * 360) : 0;
   const showFloor = role === "ADMIN";
 
@@ -827,7 +1212,7 @@ function attendanceSummaryMarkup(summary, role) {
         <td>${s.roomNo || ""}</td>
         <td>${s.roomType || ""}</td>
         ${showFloor ? `<td>${s.floorNo || ""}</td>` : ""}
-        <td><span class="attendance-status ${String(s.attendance || "").toLowerCase()}">${s.attendance || ""}</span></td>
+        <td><span class="attendance-status ${attendanceStatusClass(s.attendance)}">${s.attendance || ""}</span></td>
       </tr>`
     )
     .join("");
@@ -835,17 +1220,19 @@ function attendanceSummaryMarkup(summary, role) {
   return `
     <div class="attendance-summary-wrap">
       <div class="attendance-summary-top">
-        <div class="attendance-pie" style="--present-angle:${presentAngle}deg"></div>
+        <div class="attendance-pie ${notTaken ? "not-taken" : ""}" style="--present-angle:${presentAngle}deg"></div>
         <div class="attendance-summary-meta">
           <p><strong>Date:</strong> ${summary?.date || "-"}</p>
           <p><strong>Total Students:</strong> ${total}</p>
           <p><strong>Present:</strong> ${present}</p>
           <p><strong>Absent:</strong> ${absent}</p>
+          ${notTaken ? `<p><strong>Status:</strong> Attendance not taken</p>` : ""}
         </div>
       </div>
       <div class="attendance-legend">
         <span><i class="dot present"></i>Present</span>
         <span><i class="dot absent"></i>Absent</span>
+        ${notTaken ? `<span><i class="dot not-taken"></i>Not Taken</span>` : ""}
       </div>
       <div class="table-wrap">
         <table>
@@ -896,7 +1283,7 @@ function renderCirculars(root) {
   const load = async () => {
     try {
       const data = await api("/circular/all");
-      list.innerHTML = renderCircularCards(data, isAdmin);
+      list.innerHTML = renderCircularCards(data, isAdmin, role);
 
       if (isAdmin) {
         list.querySelectorAll("[data-delete]").forEach((btn) => {
@@ -961,26 +1348,59 @@ function renderCirculars(root) {
   load();
 }
 
-function renderCircularCards(data, isAdmin) {
+function renderCircularCards(data, isAdmin, viewerRole = state.session?.role) {
   if (!data.length) return "<p>No circulars available.</p>";
-  return data
-    .map((c) => {
-      const postedByRole = String(c.postedByRole || "ADMIN").toUpperCase();
-      const isFacultyPost = postedByRole === "FACULTY";
-      const roleText = isFacultyPost ? "Posted by Floor Incharge" : "Posted by Admin";
-      const roleClass = isFacultyPost ? "circular-faculty" : "circular-admin";
-      const floorText = isFacultyPost && c.targetFloorNo ? ` | Floor: ${c.targetFloorNo}` : "";
 
-      return `
-      <article class="stack-card ${roleClass}">
-        <h4>${c.subject || "No subject"}</h4>
-        <p>${c.details || ""}</p>
-        <small>${roleText}${floorText} | ${c.createdAt || ""}</small>
-        ${isAdmin ? `<div class="actions"><button data-edit="${c.id}">Edit</button><button class="danger" data-delete="${c.id}">Delete</button></div>` : ""}
-      </article>
+  if (viewerRole === "STUDENT") {
+    const floorCirculars = data.filter((c) => String(c.postedByRole || "ADMIN").toUpperCase() === "FACULTY");
+    const adminCirculars = data.filter((c) => String(c.postedByRole || "ADMIN").toUpperCase() !== "FACULTY");
+
+    return `
+      <div class="circular-groups">
+        ${renderCircularGroup("Floor Incharge Circulars", floorCirculars, isAdmin, "No floor incharge circulars right now.")}
+        ${renderCircularGroup("Admin Circulars", adminCirculars, isAdmin, "No admin circulars right now.")}
+      </div>
     `;
-    })
+  }
+
+  return data
+    .map((c) => renderCircularCard(c, isAdmin))
     .join("");
+}
+
+function renderCircularGroup(title, circulars, isAdmin, emptyMessage) {
+  return `
+    <section class="circular-section">
+      <div class="circular-section-head">
+        <h3>${escapeHtml(title)}</h3>
+        <span>${circulars.length} ${circulars.length === 1 ? "circular" : "circulars"}</span>
+      </div>
+      ${circulars.length
+        ? circulars.map((c) => renderCircularCard(c, isAdmin)).join("")
+        : `<p class="empty-text">${escapeHtml(emptyMessage)}</p>`}
+    </section>
+  `;
+}
+
+function renderCircularCard(c, isAdmin) {
+  const postedByRole = String(c.postedByRole || "ADMIN").toUpperCase();
+  const isFacultyPost = postedByRole === "FACULTY";
+  const roleText = isFacultyPost ? "Floor Incharge" : "Admin";
+  const roleClass = isFacultyPost ? "circular-faculty" : "circular-admin";
+  const floorText = isFacultyPost && c.targetFloorNo ? `<span>Floor: ${escapeHtml(c.targetFloorNo)}</span>` : "";
+
+  return `
+    <article class="stack-card ${roleClass}">
+      <h4>${escapeHtml(c.subject || "No subject")}</h4>
+      <p>${escapeHtml(c.details || "")}</p>
+      <div class="circular-meta" aria-label="Circular posting details">
+        <span>Posted by ${roleText}</span>
+        ${floorText}
+        <span>${escapeHtml(formatReadableDateTime(c.createdAt))}</span>
+      </div>
+      ${isAdmin ? `<div class="actions"><button data-edit="${c.id}">Edit</button><button class="danger" data-delete="${c.id}">Delete</button></div>` : ""}
+    </article>
+  `;
 }
 
 const WEEKDAY_ORDER = {
@@ -1156,6 +1576,36 @@ function renderComplaints(root) {
       </div>
     ` : ""}
 
+    <div class="complaint-filter-panel">
+      <div class="complaint-filter-head">
+        <h4>Filter Complaints</h4>
+        <p>Filter by calendar date, last week, or last month.</p>
+      </div>
+      <div class="complaint-filter-grid">
+        <div class="complaint-filter-field">
+          <label for="complaintFromDate">From</label>
+          <input id="complaintFromDate" type="date" />
+        </div>
+        <div class="complaint-filter-field">
+          <label for="complaintToDate">To</label>
+          <input id="complaintToDate" type="date" />
+        </div>
+        <div class="complaint-filter-field">
+          <label for="complaintPresetFilter">Quick Range</label>
+          <select id="complaintPresetFilter">
+            <option value="ALL">All Time</option>
+            <option value="TODAY">Today</option>
+            <option value="LAST_7_DAYS">Last 7 Days</option>
+            <option value="LAST_30_DAYS">Last 30 Days</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions complaint-filter-actions">
+        <button id="applyComplaintFilterBtn" type="button">Apply Filter</button>
+        <button id="resetComplaintFilterBtn" type="button" class="ghost">Reset</button>
+      </div>
+    </div>
+
     <div class="actions">
       <button id="loadComplaintsBtn">${canUpdate ? "Load Complaints" : "Load My Complaints"}</button>
     </div>
@@ -1166,17 +1616,104 @@ function renderComplaints(root) {
   const notice = document.getElementById("complaintNotice");
   const list = document.getElementById("complaintList");
   const summary = document.getElementById("complaintSummary");
+  const fromDateInput = document.getElementById("complaintFromDate");
+  const toDateInput = document.getElementById("complaintToDate");
+  const presetFilter = document.getElementById("complaintPresetFilter");
+  const applyFilterBtn = document.getElementById("applyComplaintFilterBtn");
+  const resetFilterBtn = document.getElementById("resetComplaintFilterBtn");
+  const complaintState = {
+    rows: []
+  };
+
+  const localDateFromValue = (value) => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
+  const complaintDayKey = (value) => {
+    if (!value) return "";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return String(value).slice(0, 10);
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, "0");
+    const d = String(parsed.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+
+  const todayIso = () => localIsoDateToday();
+
+  const applyPresetRange = () => {
+    const preset = presetFilter?.value || "ALL";
+    const today = new Date();
+    const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    let start = null;
+
+    if (preset === "TODAY") {
+      start = new Date(end);
+    } else if (preset === "LAST_7_DAYS") {
+      start = new Date(end);
+      start.setDate(start.getDate() - 6);
+    } else if (preset === "LAST_30_DAYS") {
+      start = new Date(end);
+      start.setDate(start.getDate() - 29);
+    }
+
+    if (preset === "ALL") {
+      fromDateInput.value = "";
+      toDateInput.value = "";
+      return;
+    }
+
+    if (start) {
+      fromDateInput.value = complaintDayKey(start);
+      toDateInput.value = complaintDayKey(end);
+    }
+  };
+
+  const filterComplaints = (rows) => {
+    const from = localDateFromValue(fromDateInput?.value);
+    const to = localDateFromValue(toDateInput?.value);
+
+    return rows.filter((row) => {
+      const created = row?.createdAt ? new Date(row.createdAt) : null;
+      if (!created || Number.isNaN(created.getTime())) {
+        return false;
+      }
+      const dateOnly = new Date(created.getFullYear(), created.getMonth(), created.getDate());
+      if (from && dateOnly < new Date(from.getFullYear(), from.getMonth(), from.getDate())) {
+        return false;
+      }
+      if (to && dateOnly > new Date(to.getFullYear(), to.getMonth(), to.getDate())) {
+        return false;
+      }
+      return true;
+    });
+  };
+
+  const renderFilteredComplaints = () => {
+    const filtered = filterComplaints(complaintState.rows);
+    list.innerHTML = complaintCards(filtered, canUpdate, role, regNo);
+    if (summary) {
+      summary.innerHTML = complaintSummaryMarkup(filtered);
+    }
+    bindComplaintActions();
+    bindComplaintDeleteActions();
+
+    const urgentCount = filtered.filter((row) => complaintIsUrgent(row)).length;
+    if (canUpdate && urgentCount > 0) {
+      setNotice(notice, `${urgentCount} urgent complaint(s) need attention`, "error");
+      return;
+    }
+
+    setNotice(notice, `Showing ${filtered.length} of ${complaintState.rows.length} complaint(s)`, "success");
+  };
 
   const loadComplaints = async () => {
     try {
       const rows = await api(endpoint);
-      list.innerHTML = complaintCards(rows, canUpdate, role, regNo);
-      if (summary) {
-        summary.innerHTML = complaintSummaryMarkup(rows);
-      }
-      bindComplaintActions();
-      bindComplaintDeleteActions();
-      setNotice(notice, `Loaded ${rows.length} complaint(s)`, "success");
+      complaintState.rows = rows;
+      renderFilteredComplaints();
     } catch (err) {
       setNotice(notice, err.message, "error");
     }
@@ -1211,6 +1748,21 @@ function renderComplaints(root) {
 
   const loadBtn = document.getElementById("loadComplaintsBtn");
   loadBtn.addEventListener("click", loadComplaints);
+  applyFilterBtn?.addEventListener("click", () => {
+    if (presetFilter.value !== "ALL") {
+      applyPresetRange();
+    }
+    renderFilteredComplaints();
+  });
+  resetFilterBtn?.addEventListener("click", () => {
+    fromDateInput.value = "";
+    toDateInput.value = "";
+    presetFilter.value = "ALL";
+    renderFilteredComplaints();
+  });
+  presetFilter?.addEventListener("change", () => {
+    applyPresetRange();
+  });
 
   const form = document.getElementById("complaintForm");
   if (form) {
@@ -1241,11 +1793,18 @@ function complaintSummaryMarkup(rows) {
   const inProgress = todayRows.filter((row) => row.status === "IN_PROGRESS").length;
   const resolved = todayRows.filter((row) => row.status === "RESOLVED").length;
   const total = pending + inProgress + resolved;
+  const urgent = todayRows.filter((row) => complaintIsUrgent(row)).length;
 
   const pendingAngle = total > 0 ? Math.round((pending / total) * 360) : 0;
   const progressAngle = total > 0 ? Math.round((inProgress / total) * 360) : 0;
 
   return `
+    ${urgent > 0 ? `
+      <div class="complaint-alert">
+        <strong>${urgent} urgent complaint(s)</strong>
+        <span>Need faculty/admin attention right now.</span>
+      </div>
+    ` : ""}
     <div class="attendance-summary-top">
       <div class="complaint-pie" style="--pending-angle:${pendingAngle}deg;--progress-angle:${progressAngle}deg"></div>
       <div class="attendance-summary-meta">
@@ -1268,15 +1827,18 @@ function complaintCards(rows, canUpdate, role, regNo) {
   return rows
     .map((c) => {
       const isPublic = complaintIsPublic(c);
+      const isUrgent = complaintIsUrgent(c);
       const canFacultyUpdate = canUpdate && !(role === "FACULTY" && isPublic);
       const isStudentOwner = role === "STUDENT" && String(c.studentId || "").toLowerCase() === String(regNo || "").toLowerCase();
       const canDeletePublic = isStudentOwner && isPublic && complaintWithinDays(c, 3);
       const publicBadge = isPublic ? `<span class="badge complaint-public-badge">PUBLIC</span>` : `<span class="badge">PERSONAL</span>`;
       const publicClass = role === "ADMIN" && isPublic ? "complaint-public-card" : "";
+      const urgentClass = isUrgent ? "complaint-emergency-card" : "";
+      const repeatBadge = Number(c.repeatCount || 0) > 1 ? `<span class="badge complaint-repeat-badge">Repeat x${Number(c.repeatCount || 0)}</span>` : "";
 
       return `
-      <article class="stack-card ${publicClass}">
-        <h4>${c.title || "Complaint"} ${publicBadge} ${c.emergency || c.isEmergency ? "<span class=\"badge danger\">Emergency</span>" : ""}</h4>
+      <article class="stack-card ${publicClass} ${urgentClass}">
+        <h4>${c.title || "Complaint"} ${publicBadge} ${repeatBadge} ${isUrgent ? "<span class=\"badge danger\">Urgent</span>" : ""}</h4>
         <p>${c.description || ""}</p>
         <small>Student: ${c.studentId || "-"} | Room: ${c.roomNumber || "-"} | Status: ${c.status || "-"}</small>
         ${canFacultyUpdate ? `
@@ -1297,6 +1859,14 @@ function complaintCards(rows, canUpdate, role, regNo) {
 function complaintIsPublic(complaint) {
   const category = String(complaint?.category || "").toUpperCase();
   return category === "PUBLIC" || category === "GENERAL";
+}
+
+function complaintIsUrgent(complaint) {
+  return Boolean(
+    complaint?.emergency
+      || complaint?.isEmergency
+      || Number(complaint?.repeatCount || 0) >= 3
+  );
 }
 
 function complaintWithinDays(complaint, days) {
@@ -1341,6 +1911,36 @@ function renderOutpass(root) {
       ${isAdmin ? `<button id="loadAllOutpass">All Outpasses</button>` : ""}
     </div>
 
+    <div class="complaint-filter-panel">
+      <div class="complaint-filter-head">
+        <h4>Filter Outpass</h4>
+        <p>Filter by calendar date, last week, or last month.</p>
+      </div>
+      <div class="complaint-filter-grid">
+        <div class="complaint-filter-field">
+          <label for="outpassFromDate">From</label>
+          <input id="outpassFromDate" type="date" />
+        </div>
+        <div class="complaint-filter-field">
+          <label for="outpassToDate">To</label>
+          <input id="outpassToDate" type="date" />
+        </div>
+        <div class="complaint-filter-field">
+          <label for="outpassPresetFilter">Quick Range</label>
+          <select id="outpassPresetFilter">
+            <option value="ALL">All</option>
+            <option value="TODAY">Today</option>
+            <option value="LAST_7_DAYS">Last 7 Days</option>
+            <option value="LAST_30_DAYS">Last 30 Days</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions complaint-filter-actions">
+        <button id="applyOutpassFilterBtn" type="button">Apply Filter</button>
+        <button id="resetOutpassFilterBtn" type="button" class="ghost">Reset</button>
+      </div>
+    </div>
+
     <div id="outpassNotice"></div>
     <div id="outpassList"></div>
   `;
@@ -1348,9 +1948,87 @@ function renderOutpass(root) {
   const notice = document.getElementById("outpassNotice");
   const list = document.getElementById("outpassList");
   const summaryRoot = document.getElementById("outpassSummary");
+  const fromDateInput = document.getElementById("outpassFromDate");
+  const toDateInput = document.getElementById("outpassToDate");
+  const presetFilter = document.getElementById("outpassPresetFilter");
+  const applyFilterBtn = document.getElementById("applyOutpassFilterBtn");
+  const resetFilterBtn = document.getElementById("resetOutpassFilterBtn");
+  const outpassState = {
+    rows: [],
+    canApprove: false,
+    mode: "student-history"
+  };
   let currentLoader = null;
 
-  const renderList = (rows, canApprove, mode) => {
+  const localDateFromValue = (value) => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  };
+
+  const outpassDayKey = (value) => {
+    if (!value) return "";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return "";
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, "0");
+    const d = String(parsed.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+
+  const applyOutpassPreset = () => {
+    const preset = presetFilter?.value || "ALL";
+    const today = new Date();
+    const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    let start = null;
+
+    if (preset === "TODAY") {
+      start = new Date(end);
+    } else if (preset === "LAST_7_DAYS") {
+      start = new Date(end);
+      start.setDate(start.getDate() - 6);
+    } else if (preset === "LAST_30_DAYS") {
+      start = new Date(end);
+      start.setDate(start.getDate() - 29);
+    }
+
+    if (!start) {
+      fromDateInput.value = "";
+      toDateInput.value = "";
+      return;
+    }
+
+    fromDateInput.value = outpassDayKey(start);
+    toDateInput.value = outpassDayKey(end);
+  };
+
+  const rowDateForFilter = (row) => {
+    if (row?.outDate) {
+      const outDate = localDateFromValue(String(row.outDate).slice(0, 10));
+      if (outDate) return outDate;
+    }
+    if (row?.createdAt) {
+      return localDateFromValue(row.createdAt);
+    }
+    return null;
+  };
+
+  const filterOutpasses = (rows) => {
+    const from = localDateFromValue(fromDateInput?.value);
+    const to = localDateFromValue(toDateInput?.value);
+
+    return rows.filter((row) => {
+      const rowDate = rowDateForFilter(row);
+      if (!rowDate) return !from && !to;
+      if (from && rowDate < from) return false;
+      if (to && rowDate > to) return false;
+      return true;
+    });
+  };
+
+  const renderFilteredOutpasses = () => {
+    const rows = filterOutpasses(outpassState.rows);
     if (!rows.length) {
       list.innerHTML = "<p>No outpass entries found.</p>";
       if (isAdmin && summaryRoot) {
@@ -1365,7 +2043,7 @@ function renderOutpass(root) {
 
     list.innerHTML = rows
       .map((o) => {
-        if (mode === "student-history") {
+        if (outpassState.mode === "student-history") {
           return `
         <article class="stack-card">
           <h4>${o.studentName || "Student"} (${o.regNo || ""})</h4>
@@ -1377,7 +2055,7 @@ function renderOutpass(root) {
       `;
         }
 
-        if (mode === "admin-all") {
+        if (outpassState.mode === "admin-all") {
           return `
         <article class="stack-card">
           <h4>${o.studentName || "Student"} (${o.regNo || ""})</h4>
@@ -1395,7 +2073,7 @@ function renderOutpass(root) {
           <small>Out: ${o.outDate || "-"} ${o.outTime || "-"}</small>
           <small>Return: ${o.returnDate || "-"} ${o.returnTime || "-"}</small>
           <small>Floor: ${o.floorNo || "-"} | Room: ${o.roomNo || "-"} | Status: ${formatOutpassStatus(o.status)}</small>
-          ${canApprove && o.status === "PENDING" ? `
+          ${outpassState.canApprove && o.status === "PENDING" ? `
             <div class="actions">
               <button data-approve-id="${o.id}">Approve</button>
               <button class="danger" data-deny-id="${o.id}">Deny</button>
@@ -1406,7 +2084,7 @@ function renderOutpass(root) {
       })
       .join("");
 
-    if (canApprove) {
+    if (outpassState.canApprove) {
       list.querySelectorAll("[data-approve-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           try {
@@ -1432,6 +2110,13 @@ function renderOutpass(root) {
         });
       });
     }
+  };
+
+  const renderList = (rows, canApprove, mode) => {
+    outpassState.rows = rows;
+    outpassState.canApprove = canApprove;
+    outpassState.mode = mode;
+    renderFilteredOutpasses();
   };
 
   const loadStudentHistory = async () => {
@@ -1506,6 +2191,26 @@ function renderOutpass(root) {
     });
   }
 
+  applyFilterBtn?.addEventListener("click", () => {
+    if (presetFilter.value !== "ALL") {
+      applyOutpassPreset();
+    }
+    renderFilteredOutpasses();
+    setNotice(notice, `Showing ${filterOutpasses(outpassState.rows).length} of ${outpassState.rows.length} outpass request(s)`, "success");
+  });
+
+  resetFilterBtn?.addEventListener("click", () => {
+    fromDateInput.value = "";
+    toDateInput.value = "";
+    presetFilter.value = "ALL";
+    renderFilteredOutpasses();
+    setNotice(notice, `Showing ${outpassState.rows.length} of ${outpassState.rows.length} outpass request(s)`, "success");
+  });
+
+  presetFilter?.addEventListener("change", () => {
+    applyOutpassPreset();
+  });
+
   const form = document.getElementById("outpassForm");
   if (form) {
     form.addEventListener("submit", async (e) => {
@@ -1572,17 +2277,68 @@ function renderFeedback(root) {
     ${isStudent ? `
       <form id="feedbackForm" class="form-grid" enctype="multipart/form-data">
         <h3>Submit Food Feedback</h3>
-        <label>Rating (1-5)</label>
-        <input type="number" min="1" max="5" name="rating" required />
+        <label>Rating</label>
+        <select name="rating" required>
+          <option value="">Select rating</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+        </select>
         <label>Message</label>
         <textarea name="message" required rows="3"></textarea>
-        <label>Take Photo</label>
-        <input type="file" name="cameraImage" accept="image/*" capture="environment" />
-        <label>Or Upload From Device</label>
-        <input type="file" name="uploadImage" accept="image/*" />
+        <label>Photo</label>
+        <div class="feedback-media-row">
+          <button type="button" id="feedbackCameraBtn">Take Photo</button>
+          <button type="button" id="feedbackUploadBtn" class="ghost">Upload From Device</button>
+          <input id="feedbackUploadInput" class="feedback-file-input" type="file" name="uploadImage" accept="image/*" />
+        </div>
+        <div id="feedbackCameraPanel" class="feedback-camera-panel" hidden>
+          <video id="feedbackCameraVideo" class="feedback-camera-video" playsinline muted></video>
+          <div class="actions">
+            <button type="button" id="feedbackCaptureBtn">Capture Photo</button>
+            <button type="button" id="feedbackStopCameraBtn" class="ghost">Stop Camera</button>
+          </div>
+        </div>
+        <div id="feedbackPhotoPreview" class="feedback-photo-preview" hidden>
+          <img id="feedbackPhotoPreviewImg" alt="Selected feedback photo" />
+          <span id="feedbackPhotoPreviewText">Photo selected</span>
+          <button type="button" id="feedbackClearPhotoBtn" class="ghost">Remove</button>
+        </div>
         <button type="submit">Submit Feedback</button>
       </form>
     ` : ""}
+
+    <div class="complaint-filter-panel">
+      <div class="complaint-filter-head">
+        <h4>Filter Feedback</h4>
+        <p>Filter by calendar date, last week, or last month.</p>
+      </div>
+      <div class="complaint-filter-grid">
+        <div class="complaint-filter-field">
+          <label for="feedbackFromDate">From</label>
+          <input id="feedbackFromDate" type="date" />
+        </div>
+        <div class="complaint-filter-field">
+          <label for="feedbackToDate">To</label>
+          <input id="feedbackToDate" type="date" />
+        </div>
+        <div class="complaint-filter-field">
+          <label for="feedbackPresetFilter">Quick Range</label>
+          <select id="feedbackPresetFilter">
+            <option value="ALL">All</option>
+            <option value="TODAY">Today</option>
+            <option value="LAST_7_DAYS">Last 7 Days</option>
+            <option value="LAST_30_DAYS">Last 30 Days</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions complaint-filter-actions">
+        <button id="applyFeedbackFilterBtn" type="button">Apply Filter</button>
+        <button id="resetFeedbackFilterBtn" type="button" class="ghost">Reset</button>
+      </div>
+    </div>
 
     <button id="loadFeedbackBtn">Load Feedback</button>
     <div id="feedbackNotice"></div>
@@ -1591,22 +2347,85 @@ function renderFeedback(root) {
 
   const notice = document.getElementById("feedbackNotice");
   const list = document.getElementById("feedbackList");
+  const fromDateInput = document.getElementById("feedbackFromDate");
+  const toDateInput = document.getElementById("feedbackToDate");
+  const presetFilter = document.getElementById("feedbackPresetFilter");
+  const applyFilterBtn = document.getElementById("applyFeedbackFilterBtn");
+  const resetFilterBtn = document.getElementById("resetFeedbackFilterBtn");
+  const feedbackState = {
+    rows: []
+  };
 
-  const loadFeedback = async () => {
-    try {
-      const rows = await api("/food_feedback/all");
-      if (!rows.length) {
-        list.innerHTML = "<p>No feedback entries found.</p>";
-        return;
-      }
+  const localDateFromValue = (value) => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  };
 
-      list.innerHTML = rows
-        .map((f) => {
-          const heading = canViewStudentDetails
-            ? `${f.studentName || "Student"} | Floor: ${f.floorNo || "-"} | Hostel: ${f.hostelName || "-"}`
-            : "Posted by Student";
-          const deleteBtn = isStudent && f.canDelete ? `<button class="danger" data-delete-feedback="${f.id}">Delete</button>` : "";
-          return `
+  const feedbackDayKey = (value) => {
+    if (!value) return "";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return "";
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, "0");
+    const d = String(parsed.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+
+  const applyFeedbackPreset = () => {
+    const preset = presetFilter?.value || "ALL";
+    const today = new Date();
+    const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    let start = null;
+
+    if (preset === "TODAY") {
+      start = new Date(end);
+    } else if (preset === "LAST_7_DAYS") {
+      start = new Date(end);
+      start.setDate(start.getDate() - 6);
+    } else if (preset === "LAST_30_DAYS") {
+      start = new Date(end);
+      start.setDate(start.getDate() - 29);
+    }
+
+    if (!start) {
+      fromDateInput.value = "";
+      toDateInput.value = "";
+      return;
+    }
+
+    fromDateInput.value = feedbackDayKey(start);
+    toDateInput.value = feedbackDayKey(end);
+  };
+
+  const filterFeedbackRows = (rows) => {
+    const from = localDateFromValue(fromDateInput?.value);
+    const to = localDateFromValue(toDateInput?.value);
+
+    return rows.filter((row) => {
+      const created = localDateFromValue(row?.createdAt);
+      if (!created) return !from && !to;
+      if (from && created < from) return false;
+      if (to && created > to) return false;
+      return true;
+    });
+  };
+
+  const renderFilteredFeedback = () => {
+    const rows = filterFeedbackRows(feedbackState.rows);
+    if (!rows.length) {
+      list.innerHTML = "<p>No feedback entries found.</p>";
+      return;
+    }
+
+    list.innerHTML = rows
+      .map((f) => {
+        const heading = canViewStudentDetails
+          ? `${f.studentName || "Student"} | Floor: ${f.floorNo || "-"} | Hostel: ${f.hostelName || "-"}`
+          : "Posted by Student";
+        const deleteBtn = isStudent && f.canDelete ? `<button class="danger" data-delete-feedback="${f.id}">Delete</button>` : "";
+        return `
           <article class="stack-card feedback-card">
             <h4>${heading}</h4>
             <p>Rating: ${f.rating || "-"}</p>
@@ -1615,20 +2434,28 @@ function renderFeedback(root) {
             ${deleteBtn ? `<div class="actions">${deleteBtn}</div>` : ""}
           </article>
         `;
-        })
-        .join("");
+      })
+      .join("");
 
-      list.querySelectorAll("[data-delete-feedback]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          try {
-            await api(`/food_feedback/${btn.dataset.deleteFeedback}`, { method: "DELETE" });
-            setNotice(notice, "Feedback deleted", "success");
-            await loadFeedback();
-          } catch (err) {
-            setNotice(notice, err.message, "error");
-          }
-        });
+    list.querySelectorAll("[data-delete-feedback]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api(`/food_feedback/${btn.dataset.deleteFeedback}`, { method: "DELETE" });
+          setNotice(notice, "Feedback deleted", "success");
+          await loadFeedback();
+        } catch (err) {
+          setNotice(notice, err.message, "error");
+        }
       });
+    });
+  };
+
+  const loadFeedback = async () => {
+    try {
+      const rows = await api("/food_feedback/all");
+      feedbackState.rows = rows;
+      renderFilteredFeedback();
+      setNotice(notice, `Loaded ${rows.length} feedback entr${rows.length === 1 ? "y" : "ies"}`, "success");
     } catch (err) {
       setNotice(notice, err.message, "error");
     }
@@ -1639,15 +2466,127 @@ function renderFeedback(root) {
     loadBtn.addEventListener("click", loadFeedback);
   }
 
+  applyFilterBtn?.addEventListener("click", () => {
+    if (presetFilter.value !== "ALL") {
+      applyFeedbackPreset();
+    }
+    renderFilteredFeedback();
+    setNotice(notice, `Showing ${filterFeedbackRows(feedbackState.rows).length} of ${feedbackState.rows.length} feedback entr${feedbackState.rows.length === 1 ? "y" : "ies"}`, "success");
+  });
+
+  resetFilterBtn?.addEventListener("click", () => {
+    fromDateInput.value = "";
+    toDateInput.value = "";
+    presetFilter.value = "ALL";
+    renderFilteredFeedback();
+    setNotice(notice, `Showing ${feedbackState.rows.length} of ${feedbackState.rows.length} feedback entr${feedbackState.rows.length === 1 ? "y" : "ies"}`, "success");
+  });
+
+  presetFilter?.addEventListener("change", () => {
+    applyFeedbackPreset();
+  });
+
   const form = document.getElementById("feedbackForm");
   if (form) {
+    const cameraBtn = document.getElementById("feedbackCameraBtn");
+    const uploadBtn = document.getElementById("feedbackUploadBtn");
+    const uploadInput = document.getElementById("feedbackUploadInput");
+    const cameraPanel = document.getElementById("feedbackCameraPanel");
+    const cameraVideo = document.getElementById("feedbackCameraVideo");
+    const captureBtn = document.getElementById("feedbackCaptureBtn");
+    const stopCameraBtn = document.getElementById("feedbackStopCameraBtn");
+    const preview = document.getElementById("feedbackPhotoPreview");
+    const previewImg = document.getElementById("feedbackPhotoPreviewImg");
+    const previewText = document.getElementById("feedbackPhotoPreviewText");
+    const clearPhotoBtn = document.getElementById("feedbackClearPhotoBtn");
+
+    const resetCameraUi = () => {
+      stopFeedbackCamera();
+      cameraPanel.hidden = true;
+      cameraVideo.srcObject = null;
+      cameraBtn.disabled = false;
+      captureBtn.disabled = false;
+      stopCameraBtn.disabled = false;
+    };
+
+    const showPhotoPreview = (file) => {
+      if (feedbackPhotoState.previewUrl) {
+        URL.revokeObjectURL(feedbackPhotoState.previewUrl);
+      }
+      feedbackPhotoState.previewUrl = URL.createObjectURL(file);
+      previewImg.src = feedbackPhotoState.previewUrl;
+      previewText.textContent = file.name || "Photo selected";
+      preview.hidden = false;
+    };
+
+    const clearPhoto = () => {
+      feedbackPhotoState.capturedFile = null;
+      uploadInput.value = "";
+      if (feedbackPhotoState.previewUrl) {
+        URL.revokeObjectURL(feedbackPhotoState.previewUrl);
+        feedbackPhotoState.previewUrl = "";
+      }
+      previewImg.removeAttribute("src");
+      preview.hidden = true;
+    };
+
+    cameraBtn.addEventListener("click", async () => {
+      try {
+        clearPhoto();
+        cameraBtn.disabled = true;
+        cameraPanel.hidden = false;
+        setNotice(notice, "Opening camera...", "info");
+        await startFeedbackCamera(cameraVideo);
+        setNotice(notice, "Camera is ready. Capture the food photo.", "info");
+      } catch (err) {
+        resetCameraUi();
+        setNotice(notice, err.message || "Unable to open camera.", "error");
+      }
+    });
+
+    captureBtn.addEventListener("click", async () => {
+      try {
+        const file = await captureFeedbackPhoto(cameraVideo);
+        feedbackPhotoState.capturedFile = file;
+        uploadInput.value = "";
+        showPhotoPreview(file);
+        resetCameraUi();
+        setNotice(notice, "Photo captured.", "success");
+      } catch (err) {
+        setNotice(notice, err.message || "Unable to capture photo.", "error");
+      }
+    });
+
+    stopCameraBtn.addEventListener("click", () => {
+      resetCameraUi();
+      setNotice(notice, "Camera stopped.", "info");
+    });
+
+    uploadBtn.addEventListener("click", () => {
+      resetCameraUi();
+      uploadInput.click();
+    });
+
+    uploadInput.addEventListener("change", () => {
+      const file = uploadInput.files?.[0];
+      if (!file) {
+        clearPhoto();
+        return;
+      }
+      feedbackPhotoState.capturedFile = null;
+      showPhotoPreview(file);
+    });
+
+    clearPhotoBtn.addEventListener("click", () => {
+      clearPhoto();
+      setNotice(notice, "Photo removed.", "info");
+    });
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const fd = new FormData(form);
-      const cameraImage = form.querySelector("input[name='cameraImage']")?.files?.[0] || null;
-      const uploadImage = form.querySelector("input[name='uploadImage']")?.files?.[0] || null;
-      const selectedImage = cameraImage || uploadImage;
-      fd.delete("cameraImage");
+      const uploadImage = uploadInput.files?.[0] || null;
+      const selectedImage = feedbackPhotoState.capturedFile || uploadImage;
       fd.delete("uploadImage");
       if (selectedImage) {
         fd.append("image", selectedImage);
@@ -1655,6 +2594,8 @@ function renderFeedback(root) {
       try {
         await api("/food_feedback/submit", { method: "POST", formData: fd });
         form.reset();
+        clearPhoto();
+        resetCameraUi();
         setNotice(notice, "Feedback submitted", "success");
         await loadFeedback();
       } catch (err) {
@@ -1672,32 +2613,61 @@ function renderGym(root) {
 
   root.innerHTML = `
     <div class="actions">
-      ${isAdmin ? `<button id="gymStatusBtn">Check Gym Status</button>` : `<button id="gymScanBtn">Scan Gym QR</button><button id="gymStopScanBtn" class="ghost" disabled>Stop Camera</button>`}
+      ${isAdmin ? `<button id="gymStatusBtn">Check Gym Key Status</button>` : `<button id="gymScanBtn">Scan Gym QR</button><button id="gymStopScanBtn" class="ghost" disabled>Stop Camera</button><button id="gymStatusBtn" type="button">Check Gym Key Status</button>`}
     </div>
+    ${isAdmin ? `<div id="gymQr"></div>` : ""}
     ${!isAdmin ? `<video id="gymScanVideo" class="scan-video" playsinline muted></video><p class="scan-help">Point camera to Gym QR. After scan, key status updates automatically.</p>` : ""}
     <div id="gymNotice"></div>
+    <div id="gymStatus"></div>
     ${isAdmin ? `<div id="gymLogs"></div>` : ""}
   `;
 
   const notice = document.getElementById("gymNotice");
+  const statusRoot = document.getElementById("gymStatus");
   const logsRoot = document.getElementById("gymLogs");
+  const statusBtn = document.getElementById("gymStatusBtn");
+
+  const loadStatus = async () => {
+    try {
+      const status = await api("/gym/status");
+      setNotice(notice, `${status?.status || "Gym status loaded"}`, "info");
+      statusRoot.innerHTML = keyStatusMarkup(status, "Gym");
+      if (logsRoot) {
+        logsRoot.innerHTML = keyLogMarkup(status?.logs || [], "Gym Key Usage");
+      }
+    } catch (err) {
+      setNotice(notice, err.message, "error");
+    }
+  };
+
+  statusBtn.addEventListener("click", loadStatus);
 
   if (isAdmin) {
-    document.getElementById("gymStatusBtn").addEventListener("click", async () => {
+    const qrRoot = document.getElementById("gymQr");
+    (async () => {
       try {
-        const status = await api("/gym/status");
-        setNotice(notice, `${status?.status || "Gym status loaded"}`, "info");
-        logsRoot.innerHTML = keyLogMarkup(status?.logs || [], "Gym Key Usage");
+        const qr = await api("/gym/qr");
+        qrRoot.innerHTML = permanentKeyQrMarkup(qr, "Gym QR");
       } catch (err) {
         setNotice(notice, err.message, "error");
       }
-    });
+    })();
   }
 
   if (!isAdmin) {
     const scanBtn = document.getElementById("gymScanBtn");
     const stopBtn = document.getElementById("gymStopScanBtn");
     const video = document.getElementById("gymScanVideo");
+
+    const submitGymKey = async (qrData) => {
+      try {
+        const msg = await api("/gym/scan", { method: "POST", body: { qrData } });
+        setNotice(notice, typeof msg === "string" ? msg : "Gym action completed", "success");
+        await loadStatus();
+      } catch (err) {
+        setNotice(notice, err.message, "error");
+      }
+    };
 
     const resetCameraButtons = () => {
       scanBtn.disabled = false;
@@ -1713,11 +2683,14 @@ function renderGym(root) {
         video.style.display = "block";
         setNotice(notice, "Camera started. Scanning Gym QR...", "info");
 
-        await startAttendanceScanner(video, async () => {
-          resetCameraButtons();
-          const msg = await api("/gym/scan", { method: "POST" });
-          setNotice(notice, typeof msg === "string" ? msg : "Gym action completed", "success");
-        });
+        await startAttendanceScanner(
+          video,
+          async (qrData) => {
+            resetCameraButtons();
+            await submitGymKey(qrData);
+          },
+          { onProgress: (message) => setNotice(notice, message, "info") }
+        );
       } catch (err) {
         resetCameraButtons();
         stopAttendanceScanner();
@@ -1745,7 +2718,7 @@ function renderGym(root) {
     }
   };
 
-  if (isAdmin) document.getElementById("gymStatusBtn").click();
+  loadStatus();
   checkAlerts();
   registerFeatureInterval(setInterval(checkAlerts, 45000));
 }
@@ -1756,32 +2729,61 @@ function renderIndoor(root) {
 
   root.innerHTML = `
     <div class="actions">
-      ${isAdmin ? `<button id="indoorStatusBtn">Check Indoor Court Status</button>` : `<button id="indoorScanBtn">Scan Indoor Court QR</button><button id="indoorStopScanBtn" class="ghost" disabled>Stop Camera</button>`}
+      ${isAdmin ? `<button id="indoorStatusBtn">Check Indoor Court Key Status</button>` : `<button id="indoorScanBtn">Scan Indoor Court QR</button><button id="indoorStopScanBtn" class="ghost" disabled>Stop Camera</button><button id="indoorStatusBtn" type="button">Check Indoor Court Key Status</button>`}
     </div>
+    ${isAdmin ? `<div id="indoorQr"></div>` : ""}
     ${!isAdmin ? `<video id="indoorScanVideo" class="scan-video" playsinline muted></video><p class="scan-help">Point camera to Indoor Court QR. After scan, key status updates automatically.</p>` : ""}
     <div id="indoorNotice"></div>
+    <div id="indoorStatus"></div>
     ${isAdmin ? `<div id="indoorLogs"></div>` : ""}
   `;
 
   const notice = document.getElementById("indoorNotice");
+  const statusRoot = document.getElementById("indoorStatus");
   const logsRoot = document.getElementById("indoorLogs");
+  const statusBtn = document.getElementById("indoorStatusBtn");
+
+  const loadStatus = async () => {
+    try {
+      const status = await api("/indoor-court/status");
+      setNotice(notice, `${status?.status || "Indoor court status loaded"}`, "info");
+      statusRoot.innerHTML = keyStatusMarkup(status, "Indoor Court");
+      if (logsRoot) {
+        logsRoot.innerHTML = keyLogMarkup(status?.logs || [], "Indoor Court Key Usage");
+      }
+    } catch (err) {
+      setNotice(notice, err.message, "error");
+    }
+  };
+
+  statusBtn.addEventListener("click", loadStatus);
 
   if (isAdmin) {
-    document.getElementById("indoorStatusBtn").addEventListener("click", async () => {
+    const qrRoot = document.getElementById("indoorQr");
+    (async () => {
       try {
-        const status = await api("/indoor-court/status");
-        setNotice(notice, `${status?.status || "Indoor court status loaded"}`, "info");
-        logsRoot.innerHTML = keyLogMarkup(status?.logs || [], "Indoor Court Key Usage");
+        const qr = await api("/indoor-court/qr");
+        qrRoot.innerHTML = permanentKeyQrMarkup(qr, "Indoor Court QR");
       } catch (err) {
         setNotice(notice, err.message, "error");
       }
-    });
+    })();
   }
 
   if (!isAdmin) {
     const scanBtn = document.getElementById("indoorScanBtn");
     const stopBtn = document.getElementById("indoorStopScanBtn");
     const video = document.getElementById("indoorScanVideo");
+
+    const submitIndoorKey = async (qrData) => {
+      try {
+        const msg = await api("/indoor-court/scan", { method: "POST", body: { qrData } });
+        setNotice(notice, typeof msg === "string" ? msg : "Indoor court action completed", "success");
+        await loadStatus();
+      } catch (err) {
+        setNotice(notice, err.message, "error");
+      }
+    };
 
     const resetCameraButtons = () => {
       scanBtn.disabled = false;
@@ -1797,11 +2799,14 @@ function renderIndoor(root) {
         video.style.display = "block";
         setNotice(notice, "Camera started. Scanning Indoor Court QR...", "info");
 
-        await startAttendanceScanner(video, async () => {
-          resetCameraButtons();
-          const msg = await api("/indoor-court/scan", { method: "POST" });
-          setNotice(notice, typeof msg === "string" ? msg : "Indoor court action completed", "success");
-        });
+        await startAttendanceScanner(
+          video,
+          async (qrData) => {
+            resetCameraButtons();
+            await submitIndoorKey(qrData);
+          },
+          { onProgress: (message) => setNotice(notice, message, "info") }
+        );
       } catch (err) {
         resetCameraButtons();
         stopAttendanceScanner();
@@ -1829,9 +2834,41 @@ function renderIndoor(root) {
     }
   };
 
-  if (isAdmin) document.getElementById("indoorStatusBtn").click();
+  loadStatus();
   checkAlerts();
   registerFeatureInterval(setInterval(checkAlerts, 45000));
+}
+
+function permanentKeyQrMarkup(qr, title) {
+  const qrImage = qr?.qrImageDataUrl
+    ? `<img src="${escapeHtml(qr.qrImageDataUrl)}" alt="${escapeHtml(title)}" />`
+    : `<p>QR image is not available.</p>`;
+  const qrData = escapeHtml(qr?.qrData || "-");
+  return `
+    <div class="key-qr-card">
+      <div class="qr-preview">${qrImage}</div>
+      <div>
+        <h3>${escapeHtml(title)}</h3>
+        <p>Permanent QR. It does not expire.</p>
+        <span class="badge">${qrData}</span>
+      </div>
+    </div>
+  `;
+}
+
+function keyStatusMarkup(status, label) {
+  const activeHolder = status?.activeHolder || null;
+  const isTaken = Number(status?.activeCount || 0) > 0;
+  const holderText = activeHolder
+    ? `${activeHolder.studentName || "-"} (${activeHolder.keyHolderRole || "-"})`
+    : "No active holder";
+  return `
+    <div class="panel-lite">
+      <h3>${escapeHtml(label)} Key Status</h3>
+      <p><strong>${isTaken ? "Taken" : "Returned / Available"}</strong></p>
+      <p>${escapeHtml(holderText)}</p>
+    </div>
+  `;
 }
 
 function keyLogMarkup(rows, heading) {

@@ -1,9 +1,17 @@
 package com.project.hostel_management.service;
 
+import com.project.hostel_management.dto.AttendanceForumDto;
+import com.project.hostel_management.dto.AttendanceForumMessageDto;
 import com.project.hostel_management.dto.AttendanceRowDto;
+import com.project.hostel_management.dto.AttendanceQrSessionDto;
 import com.project.hostel_management.dto.AttendanceSummaryDto;
 import com.project.hostel_management.model.Attendance;
+import com.project.hostel_management.model.AttendanceForumMessage;
+import com.project.hostel_management.model.AttendanceQrSession;
+import com.project.hostel_management.model.Faculty;
 import com.project.hostel_management.model.Student;
+import com.project.hostel_management.repository.AttendanceForumMessageRepository;
+import com.project.hostel_management.repository.AttendanceQrSessionRepository;
 import com.project.hostel_management.repository.AttendanceRepository;
 import com.project.hostel_management.repository.StudentRepository;
 import com.google.zxing.BarcodeFormat;
@@ -19,7 +27,10 @@ import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.common.BitMatrix;
 import com.google.zxing.qrcode.QRCodeWriter;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 import javax.imageio.ImageIO;
 import java.io.ByteArrayInputStream;
@@ -31,7 +42,9 @@ import java.time.LocalTime;
 import java.util.Base64;
 import java.util.EnumMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -45,10 +58,22 @@ public class AttendanceService {
     private StudentRepository studentRepository;
 
     @Autowired
+    private AttendanceQrSessionRepository qrSessionRepository;
+
+    @Autowired
+    private AttendanceForumMessageRepository forumMessageRepository;
+
+    @Autowired
     private FacultyService facultyService;
 
     // Generate QR text for student
+    @Transactional
     public Map<String, String> generateQR(String generatedBy) {
+        Faculty faculty = facultyService.findFacultyByLoginId(generatedBy)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Faculty profile not found"));
+
+        String floorNo = resolveFacultyFloor(faculty)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "Faculty floor not assigned"));
 
         LocalDate today = LocalDate.now();
 
@@ -57,10 +82,27 @@ public class AttendanceService {
         String qrData = "ATTENDANCE|" + today + "|" + sessionId;
         String qrImageDataUrl = buildQrImageDataUrl(qrData);
 
+        List<AttendanceQrSession> activeSessions =
+                qrSessionRepository.findByFloorNoIgnoreCaseAndAttendanceDateAndActiveTrue(floorNo, today);
+        activeSessions.forEach(session -> session.setActive(false));
+        qrSessionRepository.saveAll(activeSessions);
+
+        AttendanceQrSession qrSession = new AttendanceQrSession();
+        qrSession.setSessionId(sessionId);
+        qrSession.setFloorNo(floorNo);
+        qrSession.setFacultyId(generatedBy);
+        qrSession.setFacultyName(defaultString(faculty.getName(), "Floor Faculty"));
+        qrSession.setQrData(qrData);
+        qrSession.setQrImageDataUrl(qrImageDataUrl);
+        qrSession.setAttendanceDate(today);
+        qrSessionRepository.save(qrSession);
+
         return Map.of(
                 "qrData", qrData,
                 "qrImageDataUrl", qrImageDataUrl,
-                "generatedBy", generatedBy
+                "generatedBy", generatedBy,
+                "generatedByName", defaultString(faculty.getName(), "Floor Faculty"),
+                "floorNo", floorNo
         );
     }
 
@@ -119,6 +161,7 @@ public class AttendanceService {
             String loggedInStudentId,
             String studentName,
             String roomNumber,
+            String studentFloorNo,
             String ipAddress
     ) {
 
@@ -131,10 +174,23 @@ public class AttendanceService {
                 return "Invalid Student QR";
             }
             String qrDate = parts[1];
+            String sessionId = parts[2];
 
             // Validate Date
             if(!qrDate.equals(LocalDate.now().toString())) {
                 return "Expired QR";
+            }
+
+            AttendanceQrSession qrSession = qrSessionRepository
+                    .findFirstBySessionIdAndAttendanceDateAndActiveTrue(sessionId, LocalDate.now())
+                    .orElse(null);
+
+            if (qrSession == null) {
+                return "Invalid or Expired QR Session";
+            }
+
+            if (!sameFloor(qrSession.getFloorNo(), studentFloorNo)) {
+                return "Use QR Generated For Your Floor";
             }
 
             // Validate Hostel WiFi
@@ -188,44 +244,197 @@ public class AttendanceService {
 
     public AttendanceSummaryDto getAdminTodaySummary() {
         List<Student> students = studentRepository.findAll();
-        return buildSummary("ALL_HOSTEL", students);
+        return buildSummary("ALL_HOSTEL", students, Optional.empty());
     }
 
     public AttendanceSummaryDto getFacultyTodaySummary(String facultyLoginId) {
-        List<Student> students = facultyService.findFacultyByLoginId(facultyLoginId)
-                .flatMap(facultyService::resolveAssignedFloor)
+        Optional<String> floorNo = facultyService.findFacultyByLoginId(facultyLoginId)
+                .flatMap(facultyService::resolveAssignedFloor);
+        List<Student> students = floorNo
                 .map(studentRepository::findByFloorNoIgnoreCaseOrderByNameAsc)
                 .orElseGet(studentRepository::findAll);
 
-        return buildSummary("FACULTY_SCOPE", students);
+        return buildSummary("FACULTY_SCOPE", students, floorNo);
     }
 
-    private AttendanceSummaryDto buildSummary(String scope, List<Student> students) {
+    public AttendanceForumDto getForum(String role, String loginId) {
+        ForumParticipant participant = resolveForumParticipant(role, loginId);
+        LocalDate today = LocalDate.now();
+        LocalDateTime todayStart = today.atStartOfDay();
+
+        AttendanceQrSessionDto latestQr = qrSessionRepository
+                .findFirstByFloorNoIgnoreCaseAndAttendanceDateAndActiveTrueOrderByCreatedAtDesc(
+                        participant.floorNo(),
+                        today
+                )
+                .map(this::toQrDto)
+                .orElse(null);
+
+        List<AttendanceForumMessageDto> messages = forumMessageRepository
+                .findByFloorNoIgnoreCaseAndCreatedAtAfterOrderByCreatedAtAsc(
+                        participant.floorNo(),
+                        todayStart
+                )
+                .stream()
+                .map(this::toMessageDto)
+                .collect(Collectors.toList());
+
+        return new AttendanceForumDto(participant.floorNo(), latestQr, messages);
+    }
+
+    public AttendanceForumMessageDto postForumMessage(String role, String loginId, String message) {
+        String cleanMessage = normalize(message)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "Message is required"));
+
+        if (cleanMessage.length() > 1000) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Message must be 1000 characters or less");
+        }
+
+        ForumParticipant participant = resolveForumParticipant(role, loginId);
+
+        AttendanceForumMessage forumMessage = new AttendanceForumMessage();
+        forumMessage.setFloorNo(participant.floorNo());
+        forumMessage.setAuthorId(participant.id());
+        forumMessage.setAuthorName(participant.name());
+        forumMessage.setAuthorRole(participant.role());
+        forumMessage.setMessage(cleanMessage);
+
+        return toMessageDto(forumMessageRepository.save(forumMessage));
+    }
+
+    private AttendanceSummaryDto buildSummary(String scope, List<Student> students, Optional<String> floorNo) {
         LocalDate today = LocalDate.now();
         List<Attendance> attendanceRows = repository.findByAttendanceDate(today);
 
-        Set<String> presentIds = attendanceRows.stream()
+        Set<String> scopedStudentIds = students.stream()
+                .map(Student::getRegNo)
+                .filter(id -> id != null && !id.isBlank())
+                .map(id -> id.trim().toUpperCase(Locale.ROOT))
+                .collect(Collectors.toSet());
+
+        List<Attendance> scopedAttendanceRows = attendanceRows.stream()
+                .filter(attendance -> {
+                    String studentId = attendance.getStudentId();
+                    return studentId != null && scopedStudentIds.contains(studentId.trim().toUpperCase(Locale.ROOT));
+                })
+                .collect(Collectors.toList());
+
+        Set<String> presentIds = scopedAttendanceRows.stream()
                 .map(Attendance::getStudentId)
                 .filter(id -> id != null && !id.isBlank())
+                .map(id -> id.trim().toUpperCase(Locale.ROOT))
+                .filter(scopedStudentIds::contains)
                 .collect(Collectors.toSet());
+
+        boolean attendanceStarted = !scopedAttendanceRows.isEmpty();
 
         List<AttendanceRowDto> rows = students.stream()
                 .map(student -> {
-                    boolean isPresent = presentIds.contains(student.getRegNo());
+                    String regNo = defaultString(student.getRegNo(), "").toUpperCase(Locale.ROOT);
+                    boolean isPresent = presentIds.contains(regNo);
                     return new AttendanceRowDto(
                             student.getName(),
                             student.getRoomNo(),
                             student.getRoomType(),
                             student.getFloorNo(),
-                            isPresent ? "PRESENT" : "ABSENT"
+                            attendanceStarted ? (isPresent ? "PRESENT" : "ABSENT") : "NOT TAKEN"
                     );
                 })
                 .collect(Collectors.toList());
 
         int presentCount = (int) rows.stream().filter(r -> "PRESENT".equals(r.getAttendance())).count();
         int total = rows.size();
-        int absentCount = total - presentCount;
+        int absentCount = attendanceStarted ? total - presentCount : 0;
 
         return new AttendanceSummaryDto(scope, today, presentCount, absentCount, total, rows);
+    }
+
+    private ForumParticipant resolveForumParticipant(String role, String loginId) {
+        String currentRole = defaultString(role, "").toUpperCase(Locale.ROOT);
+
+        if ("FACULTY".equals(currentRole)) {
+            Faculty faculty = facultyService.findFacultyByLoginId(loginId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Faculty profile not found"));
+            String floorNo = resolveFacultyFloor(faculty)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "Faculty floor not assigned"));
+
+            return new ForumParticipant(
+                    loginId,
+                    defaultString(faculty.getName(), "Floor Faculty"),
+                    "FACULTY",
+                    floorNo
+            );
+        }
+
+        if ("STUDENT".equals(currentRole)) {
+            Student student = studentRepository.findByRegNo(loginId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student profile not found"));
+            String floorNo = normalize(student.getFloorNo())
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "Student floor not assigned"));
+
+            return new ForumParticipant(
+                    student.getRegNo(),
+                    defaultString(student.getName(), "Student"),
+                    "STUDENT",
+                    floorNo
+            );
+        }
+
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+    }
+
+    private AttendanceQrSessionDto toQrDto(AttendanceQrSession session) {
+        return new AttendanceQrSessionDto(
+                session.getId(),
+                session.getSessionId(),
+                session.getFloorNo(),
+                session.getFacultyName(),
+                session.getQrData(),
+                session.getQrImageDataUrl(),
+                session.getCreatedAt()
+        );
+    }
+
+    private AttendanceForumMessageDto toMessageDto(AttendanceForumMessage message) {
+        return new AttendanceForumMessageDto(
+                message.getId(),
+                message.getAuthorName(),
+                message.getAuthorRole(),
+                message.getMessage(),
+                message.getCreatedAt()
+        );
+    }
+
+    private Optional<String> resolveFacultyFloor(Faculty faculty) {
+        Optional<String> assignedFloor = facultyService.resolveAssignedFloor(faculty);
+        if (assignedFloor.isPresent()) {
+            return assignedFloor;
+        }
+        return normalize(faculty.getFloorNo());
+    }
+
+    private boolean sameFloor(String expected, String actual) {
+        Optional<String> expectedFloor = normalize(expected);
+        Optional<String> actualFloor = normalize(actual);
+
+        return expectedFloor.isPresent()
+                && actualFloor.isPresent()
+                && expectedFloor.get().equalsIgnoreCase(actualFloor.get());
+    }
+
+    private Optional<String> normalize(String value) {
+        if (value == null) {
+            return Optional.empty();
+        }
+
+        String normalized = value.trim();
+        return normalized.isEmpty() ? Optional.empty() : Optional.of(normalized);
+    }
+
+    private String defaultString(String value, String fallback) {
+        return normalize(value).orElse(fallback);
+    }
+
+    private record ForumParticipant(String id, String name, String role, String floorNo) {
     }
 }

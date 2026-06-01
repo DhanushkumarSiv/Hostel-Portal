@@ -41,8 +41,8 @@ public class FacultyService {
             return Optional.empty();
         }
 
-        String floorIncharge = normalize(faculty.getFloorincharge());
-        return floorIncharge == null ? Optional.empty() : Optional.of(floorIncharge);
+        String floorNo = normalize(faculty.getFloorNo());
+        return floorNo == null ? Optional.empty() : Optional.of(floorNo);
     }
 
     private String normalize(String value) {

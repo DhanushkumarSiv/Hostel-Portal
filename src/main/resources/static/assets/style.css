@@ -463,6 +463,14 @@ textarea:focus {
   margin-bottom: 10px;
 }
 
+.key-status-text.closed {
+  color: var(--accent);
+}
+
+.key-status-text.taken {
+  color: #0f8f62;
+}
+
 .attendance-forum {
   display: grid;
   gap: 12px;

@@ -2917,9 +2917,12 @@ function renderGym(root) {
   const isAdmin = role === "ADMIN";
 
   root.innerHTML = `
-    <div class="actions">
-      ${isAdmin ? `<button id="gymStatusBtn">Check Gym Key Status</button>` : `<button id="gymScanBtn">Scan Gym QR</button><button id="gymStopScanBtn" class="ghost" disabled>Stop Camera</button><button id="gymStatusBtn" type="button">Check Gym Key Status</button>`}
-    </div>
+    ${!isAdmin ? `
+      <div class="actions">
+        <button id="gymScanBtn">Scan Gym QR</button>
+        <button id="gymStopScanBtn" class="ghost" disabled>Stop Camera</button>
+      </div>
+    ` : ""}
     ${isAdmin ? `<div id="gymQr"></div>` : ""}
     ${!isAdmin ? `<video id="gymScanVideo" class="scan-video" playsinline muted></video><p class="scan-help">Point camera to Gym QR. After scan, key status updates automatically.</p>` : ""}
     <div id="gymNotice"></div>
@@ -2930,12 +2933,10 @@ function renderGym(root) {
   const notice = document.getElementById("gymNotice");
   const statusRoot = document.getElementById("gymStatus");
   const logsRoot = document.getElementById("gymLogs");
-  const statusBtn = document.getElementById("gymStatusBtn");
 
   const loadStatus = async () => {
     try {
       const status = await api("/gym/status");
-      setNotice(notice, `${status?.status || "Gym status loaded"}`, "info");
       statusRoot.innerHTML = keyStatusMarkup(status, "Gym");
       if (logsRoot) {
         logsRoot.innerHTML = keyLogMarkup(status?.logs || [], "Gym Key Usage");
@@ -2944,8 +2945,6 @@ function renderGym(root) {
       setNotice(notice, err.message, "error");
     }
   };
-
-  statusBtn.addEventListener("click", loadStatus);
 
   if (isAdmin) {
     const qrRoot = document.getElementById("gymQr");
@@ -3033,9 +3032,12 @@ function renderIndoor(root) {
   const isAdmin = role === "ADMIN";
 
   root.innerHTML = `
-    <div class="actions">
-      ${isAdmin ? `<button id="indoorStatusBtn">Check Indoor Court Key Status</button>` : `<button id="indoorScanBtn">Scan Indoor Court QR</button><button id="indoorStopScanBtn" class="ghost" disabled>Stop Camera</button><button id="indoorStatusBtn" type="button">Check Indoor Court Key Status</button>`}
-    </div>
+    ${!isAdmin ? `
+      <div class="actions">
+        <button id="indoorScanBtn">Scan Indoor Court QR</button>
+        <button id="indoorStopScanBtn" class="ghost" disabled>Stop Camera</button>
+      </div>
+    ` : ""}
     ${isAdmin ? `<div id="indoorQr"></div>` : ""}
     ${!isAdmin ? `<video id="indoorScanVideo" class="scan-video" playsinline muted></video><p class="scan-help">Point camera to Indoor Court QR. After scan, key status updates automatically.</p>` : ""}
     <div id="indoorNotice"></div>
@@ -3046,12 +3048,10 @@ function renderIndoor(root) {
   const notice = document.getElementById("indoorNotice");
   const statusRoot = document.getElementById("indoorStatus");
   const logsRoot = document.getElementById("indoorLogs");
-  const statusBtn = document.getElementById("indoorStatusBtn");
 
   const loadStatus = async () => {
     try {
       const status = await api("/indoor-court/status");
-      setNotice(notice, `${status?.status || "Indoor court status loaded"}`, "info");
       statusRoot.innerHTML = keyStatusMarkup(status, "Indoor Court");
       if (logsRoot) {
         logsRoot.innerHTML = keyLogMarkup(status?.logs || [], "Indoor Court Key Usage");
@@ -3060,8 +3060,6 @@ function renderIndoor(root) {
       setNotice(notice, err.message, "error");
     }
   };
-
-  statusBtn.addEventListener("click", loadStatus);
 
   if (isAdmin) {
     const qrRoot = document.getElementById("indoorQr");
@@ -3167,10 +3165,11 @@ function keyStatusMarkup(status, label) {
   const holderText = activeHolder
     ? `${activeHolder.studentName || "-"} (${activeHolder.keyHolderRole || "-"})`
     : "No active holder";
+  const statusText = isTaken ? `${label} Opened` : `${label} Closed`;
   return `
     <div class="panel-lite">
       <h3>${escapeHtml(label)} Key Status</h3>
-      <p><strong>${isTaken ? "Taken" : "Returned / Available"}</strong></p>
+      <p><strong class="key-status-text ${isTaken ? "taken" : "closed"}">${escapeHtml(statusText)}</strong></p>
       <p>${escapeHtml(holderText)}</p>
     </div>
   `;

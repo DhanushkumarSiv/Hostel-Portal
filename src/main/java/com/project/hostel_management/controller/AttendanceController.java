@@ -53,7 +53,7 @@ public class AttendanceController {
         if (!service.isAllowedAttendanceScanIp(clientIp)) {
             throw new ResponseStatusException(
                     HttpStatus.FORBIDDEN,
-                    "Attendance scan is allowed only on 10.197.210.* network. Detected IP: "
+                    "Attendance scan is allowed only from an approved network. Detected IP: "
                             + service.attendanceIpDebugValue(clientIp)
             );
         }

@@ -27,6 +27,7 @@ import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.common.BitMatrix;
 import com.google.zxing.qrcode.QRCodeWriter;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -56,7 +57,8 @@ import java.util.Arrays;
 
 @Service
 public class AttendanceService {
-    private static final String ATTENDANCE_ALLOWED_IP_PREFIX = "10.197.210.";
+    private static final String DEFAULT_ATTENDANCE_ALLOWED_IP_PREFIXES =
+            "10.197.210.,157.51.143.,127.0.0.1,::1,0:0:0:0:0:0:0:1";
     private static final long ATTENDANCE_QR_VALIDITY_MINUTES = 60L;
 
     @Autowired
@@ -73,6 +75,9 @@ public class AttendanceService {
 
     @Autowired
     private FacultyService facultyService;
+
+    @Value("${attendance.allowed-ip-prefixes:" + DEFAULT_ATTENDANCE_ALLOWED_IP_PREFIXES + "}")
+    private String attendanceAllowedIpPrefixes;
 
     // Generate QR text for student
     @Transactional
@@ -169,9 +174,10 @@ public class AttendanceService {
         }
 
         List<String> normalizedIps = normalizedIpCandidates(ipAddress);
+        List<String> allowedPrefixes = allowedAttendanceIpPrefixes();
 
         for (String normalizedIp : normalizedIps) {
-            if (normalizedIp.startsWith(ATTENDANCE_ALLOWED_IP_PREFIX)) {
+            if (allowedPrefixes.stream().anyMatch(normalizedIp::startsWith)) {
                 return true;
             }
         }
@@ -179,7 +185,7 @@ public class AttendanceService {
         boolean hasLoopback = normalizedIps.stream().anyMatch(this::isLoopbackIp);
         if (hasLoopback) {
             return localDeviceIpv4s().stream()
-                    .anyMatch(ip -> ip.startsWith(ATTENDANCE_ALLOWED_IP_PREFIX));
+                    .anyMatch(ip -> allowedPrefixes.stream().anyMatch(ip::startsWith));
         }
 
         return false;
@@ -251,9 +257,9 @@ public class AttendanceService {
                 return "Use QR Generated For Your Floor";
             }
 
-            // Restrict student attendance scan to campus subnet.
+            // Restrict student attendance scan to approved network ranges.
             if (!isAllowedAttendanceScanIp(ipAddress)) {
-                return "Attendance scan is allowed only on 10.197.210.* network. Detected IP: "
+                return "Attendance scan is allowed only from an approved network. Detected IP: "
                         + attendanceIpDebugValue(ipAddress);
             }
 
@@ -553,6 +559,13 @@ public class AttendanceService {
         return Arrays.stream(defaultString(ipAddress, "").split(","))
                 .map(this::normalizeIp)
                 .filter(value -> value != null && !value.isBlank())
+                .collect(Collectors.toList());
+    }
+
+    private List<String> allowedAttendanceIpPrefixes() {
+        return Arrays.stream(defaultString(attendanceAllowedIpPrefixes, DEFAULT_ATTENDANCE_ALLOWED_IP_PREFIXES).split(","))
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
                 .collect(Collectors.toList());
     }
 

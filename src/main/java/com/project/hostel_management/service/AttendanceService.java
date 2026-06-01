@@ -58,7 +58,7 @@ import java.util.Arrays;
 @Service
 public class AttendanceService {
     private static final String DEFAULT_ATTENDANCE_ALLOWED_IP_PREFIXES =
-            "10.197.210.,157.51.143.,127.0.0.1,::1,0:0:0:0:0:0:0:1";
+            "10.197.210.,157.51.133.,157.51.143.,127.0.0.1,::1,0:0:0:0:0:0:0:1";
     private static final long ATTENDANCE_QR_VALIDITY_MINUTES = 60L;
 
     @Autowired

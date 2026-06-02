@@ -3,9 +3,11 @@ package com.project.hostel_management.controller;
 import com.project.hostel_management.dto.AttendanceForumDto;
 import com.project.hostel_management.dto.AttendanceForumMessageDto;
 import com.project.hostel_management.dto.AttendanceSummaryDto;
+import com.project.hostel_management.service.AttendanceNetworkAccessService;
 import com.project.hostel_management.service.AttendanceService;
 import com.project.hostel_management.service.SecurityUtil;
 import com.project.hostel_management.service.StudentService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -20,6 +22,9 @@ public class AttendanceController {
 
     @Autowired
     private AttendanceService service;
+
+    @Autowired
+    private AttendanceNetworkAccessService attendanceNetworkAccessService;
 
     @Autowired
     private SecurityUtil securityUtil;
@@ -56,11 +61,14 @@ public class AttendanceController {
     // Mark Attendance
     @PostMapping("/mark")
     public String markAttendance(
-            @RequestBody Map<String, String> body
+            @RequestBody Map<String, String> body,
+            HttpServletRequest request
     ) {
         if (!securityUtil.hasAnyRole("STUDENT")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
+
+        attendanceNetworkAccessService.validateAttendanceMarkingAccess(request);
 
         String qrData = body.get("qrData");
         String regNo = securityUtil.getCurrentRegNo();

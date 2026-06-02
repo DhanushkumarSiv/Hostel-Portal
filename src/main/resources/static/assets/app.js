@@ -19,6 +19,8 @@ const ROLE_FEATURES = {
   ADMIN: ["dashboard", "students", "attendance", "circulars", "menu", "complaints", "outpass", "feedback", "gym", "indoor"]
 };
 
+const NOTIFICATION_FEATURES = new Set(["feedback", "outpass", "complaints", "circulars", "attendance"]);
+
 const state = {
   session: loadSession(),
   activeFeature: "dashboard"
@@ -64,6 +66,204 @@ function escapeHtml(value) {
     "\"": "&quot;",
     "'": "&#39;"
   }[char]));
+}
+
+function normalizeRole(value) {
+  return String(value ?? "").trim().toUpperCase().replace(/^ROLE_+/, "");
+}
+
+function getNotificationSeenKey(session, feature) {
+  const role = normalizeRole(session?.role) || "UNKNOWN";
+  const regNo = String(session?.regNo ?? "anonymous").trim() || "anonymous";
+  return `${STORAGE_KEY}:seen:${role}:${regNo}:${feature}`;
+}
+
+function readNotificationSeenAt(session, feature) {
+  try {
+    const raw = localStorage.getItem(getNotificationSeenKey(session, feature));
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch (err) {
+    return 0;
+  }
+}
+
+function markNotificationSeen(session, feature, timestamp = Date.now()) {
+  try {
+    localStorage.setItem(getNotificationSeenKey(session, feature), String(timestamp));
+  } catch (err) {
+    // Ignore storage failures; badge counts will fall back to a fresh load.
+  }
+}
+
+function parseTimestamp(value) {
+  if (!value) return 0;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+}
+
+function countUnreadItems(items, seenAt) {
+  if (!Array.isArray(items) || !items.length) {
+    return 0;
+  }
+
+  return items.reduce((total, item) => total + (parseTimestamp(item?.createdAt) > seenAt ? 1 : 0), 0);
+}
+
+function countUnreadAttendance(forum, seenAt, role) {
+  if (normalizeRole(role) === "ADMIN" || !forum) {
+    return 0;
+  }
+
+  const messageCount = countUnreadItems(Array.isArray(forum?.messages) ? forum.messages : [], seenAt);
+  const qrCount = parseTimestamp(forum?.latestQr?.createdAt) > seenAt ? 1 : 0;
+
+  return qrCount + messageCount;
+}
+
+function notificationEndpoint(feature, session) {
+  const role = normalizeRole(session?.role);
+  const regNo = String(session?.regNo ?? "").trim();
+
+  switch (feature) {
+    case "feedback":
+      return "/food_feedback/all";
+    case "complaints":
+      if (role === "FACULTY") return "/complaint/faculty/mine";
+      if (role === "ADMIN") return "/complaint";
+      return "/complaint/student/feed";
+    case "circulars":
+      return "/circular/all";
+    case "attendance":
+      return role === "ADMIN" ? null : "/attendance/forum";
+    case "outpass":
+      if (!regNo) return null;
+      if (role === "FACULTY") return "/outpass/faculty/mine/pending";
+      if (role === "ADMIN") return "/outpass/all";
+      return `/outpass/my/${encodeURIComponent(regNo)}`;
+    default:
+      return null;
+  }
+}
+
+async function loadSidebarCounts(session) {
+  if (!session) {
+    return {};
+  }
+
+  const features = ["feedback", "outpass", "complaints", "circulars", "attendance"];
+  const result = {};
+
+  await Promise.all(features.map(async (feature) => {
+    const endpoint = notificationEndpoint(feature, session);
+    if (!endpoint) {
+      result[feature] = 0;
+      return;
+    }
+
+    const seenAt = readNotificationSeenAt(session, feature);
+
+    try {
+      const payload = await api(endpoint);
+      if (feature === "attendance") {
+        result[feature] = countUnreadAttendance(payload, seenAt, session.role);
+        return;
+      }
+
+      result[feature] = countUnreadItems(Array.isArray(payload) ? payload : [], seenAt);
+    } catch (err) {
+      result[feature] = 0;
+    }
+  }));
+
+  return result;
+}
+
+function SidebarFeatureIcon({ feature }) {
+  const commonProps = {
+    viewBox: "0 0 24 24",
+    "aria-hidden": "true"
+  };
+
+  switch (feature) {
+    case "dashboard":
+      return (
+        <svg {...commonProps}>
+          <path d="M4 11.5 12 4l8 7.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M6.5 10.5V20h11V10.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "students":
+      return (
+        <svg {...commonProps}>
+          <path d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm6 2a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M4.5 19c1.1-2.8 3.1-4.2 5.5-4.2s4.4 1.4 5.5 4.2M13.3 19c.5-1.8 1.9-3.1 4.2-3.1 1.2 0 2.2.3 3 .9" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "attendance":
+      return (
+        <svg {...commonProps}>
+          <path d="M4.5 4.5h5v5h-5zM14.5 4.5h5v5h-5zM4.5 14.5h5v5h-5z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M16.5 14.5h3M14.5 14.5v5M18.5 14.5v5M14.5 18.5h5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "circulars":
+      return (
+        <svg {...commonProps}>
+          <path d="M5 14.5V9.5l6.5-3v11L5 14.5Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M11.5 7.5c2.2.6 3.5 2.2 3.5 4.5s-1.3 3.9-3.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M16.5 6.5c1.4 1.2 2.2 2.9 2.2 5s-.8 3.8-2.2 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "menu":
+      return (
+        <svg {...commonProps}>
+          <path d="M6 7.5h12M6 12h12M6 16.5h12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "complaints":
+      return (
+        <svg {...commonProps}>
+          <path d="M12 4.8 20 19H4L12 4.8Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M12 9v4.2M12 16.2h.01" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "outpass":
+      return (
+        <svg {...commonProps}>
+          <path d="M10 4.5H5.5v15H10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M14 8.5 18 12l-4 3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M18 12H9" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "feedback":
+      return (
+        <svg {...commonProps}>
+          <path d="M4.5 6.5h15v9h-8l-4.2 3.2v-3.2h-2.8z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M8 10.5h8M8 13.5h5.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "gym":
+      return (
+        <svg {...commonProps}>
+          <path d="M4.5 9v6M7 7v10M9.5 9v6M14.5 9v6M17 7v10M19.5 9v6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          <path d="M9.5 12h5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "indoor":
+      return (
+        <svg {...commonProps}>
+          <path d="M5 7.5h14l-2 9H7L5 7.5Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M9 7.5 12 16.5M15 7.5 12 16.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    default:
+      return (
+        <svg {...commonProps}>
+          <circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        </svg>
+      );
+  }
 }
 
 async function api(path, options = {}) {
@@ -677,6 +877,7 @@ function App() {
   const [activeFeature, setActiveFeature] = useState(state.activeFeature);
   const [notice, setNoticeState] = useState({ message: "", kind: "info" });
   const [menuOpen, setMenuOpen] = useState(false);
+  const [sidebarCounts, setSidebarCounts] = useState({});
 
   const allowedFeatures = useMemo(() => {
     if (!session) return [];
@@ -687,6 +888,30 @@ function App() {
     state.session = session;
     state.activeFeature = activeFeature;
   }, [session, activeFeature]);
+
+  useEffect(() => {
+    if (!session) {
+      setSidebarCounts({});
+      return;
+    }
+
+    let cancelled = false;
+
+    const refreshSidebarCounts = async () => {
+      const counts = await loadSidebarCounts(session);
+      if (!cancelled) {
+        setSidebarCounts(counts);
+      }
+    };
+
+    refreshSidebarCounts();
+    const timerId = window.setInterval(refreshSidebarCounts, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timerId);
+    };
+  }, [session]);
 
   useEffect(() => {
     if (!session) {
@@ -712,6 +937,7 @@ function App() {
     saveSession(null);
     setSession(null);
     setActiveFeature("dashboard");
+    setSidebarCounts({});
     setNoticeState({ message: "", kind: "info" });
   };
 
@@ -792,9 +1018,28 @@ function App() {
             <button
               key={feature}
               className={`menu-item ${activeFeature === feature ? "active" : ""}`}
-              onClick={() => setActiveFeature(feature)}
+              onClick={() => {
+                if (NOTIFICATION_FEATURES.has(feature)) {
+                  markNotificationSeen(session, feature);
+                  setSidebarCounts((current) => ({
+                    ...current,
+                    [feature]: 0
+                  }));
+                }
+                setActiveFeature(feature);
+                setMenuOpen(false);
+              }}
+              aria-label={`${FEATURES[feature]}${sidebarCounts[feature] ? `, ${sidebarCounts[feature]} unread` : ""}`}
             >
-              {FEATURES[feature]}
+              <span className="menu-item-main">
+                <span className="menu-icon" aria-hidden="true">
+                  <SidebarFeatureIcon feature={feature} />
+                </span>
+                <span className="menu-label">{FEATURES[feature]}</span>
+              </span>
+              {sidebarCounts[feature] > 0 ? (
+                <span className="menu-count">{sidebarCounts[feature] > 99 ? "99+" : sidebarCounts[feature]}</span>
+              ) : null}
             </button>
           ))}
         </nav>

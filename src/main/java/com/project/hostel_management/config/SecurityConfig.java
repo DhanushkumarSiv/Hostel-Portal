@@ -38,6 +38,7 @@ public class SecurityConfig {
                                 "/index.html",
                                 "/assets/**",
                                 "/uploads/**",
+                                "/food_feedback/image/**",
                                 "/api/health",
                                 "/login",
                                 "/register",

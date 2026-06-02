@@ -112,6 +112,10 @@ function card(label, value) {
   return `<div class="card"><div class="card-label">${label}</div><div class="card-value">${value || "-"}</div></div>`;
 }
 
+function foodFeedbackImageUrl(imageName) {
+  return imageName ? `/food_feedback/image/${encodeURIComponent(imageName)}` : "";
+}
+
 function profileLine(label, value) {
   return `<div class="profile-line"><span>${label}</span><strong>${value || "-"}</strong></div>`;
 }
@@ -2735,7 +2739,7 @@ function renderFeedback(root) {
             <h4>${heading}</h4>
             <p>Rating: ${f.rating || "-"}</p>
             <p>${f.message || ""}</p>
-            ${f.imageName ? `<img class="preview" src="/uploads/feedback-images/${f.imageName}" alt="Feedback image" />` : ""}
+            ${f.imageName ? `<img class="preview" src="${foodFeedbackImageUrl(f.imageName)}" alt="Feedback image" />` : ""}
             ${deleteBtn ? `<div class="actions">${deleteBtn}</div>` : ""}
           </article>
         `;

@@ -27,7 +27,6 @@ import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.common.BitMatrix;
 import com.google.zxing.qrcode.QRCodeWriter;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,14 +36,9 @@ import javax.imageio.ImageIO;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.awt.image.BufferedImage;
-import java.net.Inet4Address;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.net.SocketException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.util.ArrayList;
 import java.util.Base64;
 import java.util.EnumMap;
 import java.util.List;
@@ -53,12 +47,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
-import java.util.Arrays;
 
 @Service
 public class AttendanceService {
-    private static final String DEFAULT_ATTENDANCE_ALLOWED_IP_PREFIXES =
-            "10.197.210.,157.51.133.,157.51.143.,127.0.0.1,::1,0:0:0:0:0:0:0:1";
     private static final long ATTENDANCE_QR_VALIDITY_MINUTES = 60L;
 
     @Autowired
@@ -75,9 +66,6 @@ public class AttendanceService {
 
     @Autowired
     private FacultyService facultyService;
-
-    @Value("${attendance.allowed-ip-prefixes:" + DEFAULT_ATTENDANCE_ALLOWED_IP_PREFIXES + "}")
-    private String attendanceAllowedIpPrefixes;
 
     // Generate QR text for student
     @Transactional
@@ -168,60 +156,13 @@ public class AttendanceService {
         }
     }
 
-    public boolean isAllowedAttendanceScanIp(String ipAddress) {
-        if (ipAddress == null || ipAddress.isBlank()) {
-            return false;
-        }
-
-        List<String> normalizedIps = normalizedIpCandidates(ipAddress);
-        List<String> allowedPrefixes = allowedAttendanceIpPrefixes();
-
-        for (String normalizedIp : normalizedIps) {
-            if (allowedPrefixes.stream().anyMatch(normalizedIp::startsWith)) {
-                return true;
-            }
-        }
-
-        boolean hasLoopback = normalizedIps.stream().anyMatch(this::isLoopbackIp);
-        if (hasLoopback) {
-            return localDeviceIpv4s().stream()
-                    .anyMatch(ip -> allowedPrefixes.stream().anyMatch(ip::startsWith));
-        }
-
-        return false;
-    }
-
-    public String attendanceIpDebugValue(String ipAddress) {
-        if (ipAddress == null || ipAddress.isBlank()) {
-            return "unknown";
-        }
-
-        List<String> normalizedIps = normalizedIpCandidates(ipAddress);
-        String remoteIps = normalizedIps.stream()
-                .filter(value -> value != null && !value.isBlank())
-                .collect(Collectors.joining(", "));
-
-        boolean hasLoopback = normalizedIps.stream().anyMatch(this::isLoopbackIp);
-        if (!hasLoopback) {
-            return remoteIps.isBlank() ? "unknown" : remoteIps;
-        }
-
-        List<String> deviceIps = localDeviceIpv4s();
-        String deviceIpText = deviceIps.isEmpty() ? "none" : String.join(", ", deviceIps);
-        if (remoteIps.isBlank()) {
-            return "loopback | Device IPs: " + deviceIpText;
-        }
-        return remoteIps + " | Device IPs: " + deviceIpText;
-    }
-
     // Mark Attendance
     public String markAttendance(
             String qrData,
             String loggedInStudentId,
             String studentName,
             String roomNumber,
-            String studentFloorNo,
-            String ipAddress
+            String studentFloorNo
     ) {
 
         try {
@@ -255,12 +196,6 @@ public class AttendanceService {
 
             if (!sameFloor(qrSession.getFloorNo(), studentFloorNo)) {
                 return "Use QR Generated For Your Floor";
-            }
-
-            // Restrict student attendance scan to approved network ranges.
-            if (!isAllowedAttendanceScanIp(ipAddress)) {
-                return "Attendance scan is allowed only from an approved network. Detected IP: "
-                        + attendanceIpDebugValue(ipAddress);
             }
 
             // Check Duplicate Attendance
@@ -525,83 +460,6 @@ public class AttendanceService {
 
     private String defaultString(String value, String fallback) {
         return normalize(value).orElse(fallback);
-    }
-
-    private String normalizeIp(String ipAddress) {
-        String rawIp = defaultString(ipAddress, "").trim();
-        if (rawIp.isEmpty()) {
-            return rawIp;
-        }
-
-        if (rawIp.startsWith("::ffff:")) {
-            rawIp = rawIp.substring(7);
-        }
-
-        if (rawIp.startsWith("[") && rawIp.contains("]")) {
-            rawIp = rawIp.substring(1, rawIp.indexOf(']'));
-        }
-
-        int semicolonIndex = rawIp.indexOf(';');
-        if (semicolonIndex > -1) {
-            rawIp = rawIp.substring(0, semicolonIndex).trim();
-        }
-
-        // Strip port from IPv4 like 10.197.210.25:54321
-        int colonIndex = rawIp.indexOf(':');
-        if (colonIndex > -1 && rawIp.chars().filter(ch -> ch == ':').count() == 1) {
-            rawIp = rawIp.substring(0, colonIndex);
-        }
-
-        return rawIp;
-    }
-
-    private List<String> normalizedIpCandidates(String ipAddress) {
-        return Arrays.stream(defaultString(ipAddress, "").split(","))
-                .map(this::normalizeIp)
-                .filter(value -> value != null && !value.isBlank())
-                .collect(Collectors.toList());
-    }
-
-    private List<String> allowedAttendanceIpPrefixes() {
-        return Arrays.stream(defaultString(attendanceAllowedIpPrefixes, DEFAULT_ATTENDANCE_ALLOWED_IP_PREFIXES).split(","))
-                .map(String::trim)
-                .filter(value -> !value.isBlank())
-                .collect(Collectors.toList());
-    }
-
-    private boolean isLoopbackIp(String ipAddress) {
-        return "127.0.0.1".equals(ipAddress)
-                || "::1".equals(ipAddress)
-                || "0:0:0:0:0:0:0:1".equals(ipAddress);
-    }
-
-    private List<String> localDeviceIpv4s() {
-        List<String> ips = new ArrayList<>();
-        try {
-            var networkInterfaces = NetworkInterface.getNetworkInterfaces();
-            if (networkInterfaces == null) {
-                return ips;
-            }
-
-            while (networkInterfaces.hasMoreElements()) {
-                NetworkInterface networkInterface = networkInterfaces.nextElement();
-                if (!networkInterface.isUp() || networkInterface.isLoopback()) {
-                    continue;
-                }
-
-                var addresses = networkInterface.getInetAddresses();
-                while (addresses.hasMoreElements()) {
-                    InetAddress address = addresses.nextElement();
-                    if (address instanceof Inet4Address && !address.isLoopbackAddress()) {
-                        ips.add(address.getHostAddress());
-                    }
-                }
-            }
-        } catch (SocketException ignored) {
-            return List.of();
-        }
-
-        return ips;
     }
 
     private record ForumParticipant(String id, String name, String role, String floorNo) {

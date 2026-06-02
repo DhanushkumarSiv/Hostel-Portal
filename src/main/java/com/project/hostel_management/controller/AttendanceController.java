@@ -6,7 +6,6 @@ import com.project.hostel_management.dto.AttendanceSummaryDto;
 import com.project.hostel_management.service.AttendanceService;
 import com.project.hostel_management.service.SecurityUtil;
 import com.project.hostel_management.service.StudentService;
-import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -42,20 +41,10 @@ public class AttendanceController {
 
     @PostMapping("/decode-qr")
     public Map<String, String> decodeQr(
-            @RequestBody Map<String, String> body,
-            HttpServletRequest request
+            @RequestBody Map<String, String> body
     ) {
         if (!securityUtil.hasAnyRole("STUDENT")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
-        }
-
-        String clientIp = extractClientIp(request);
-        if (!service.isAllowedAttendanceScanIp(clientIp)) {
-            throw new ResponseStatusException(
-                    HttpStatus.FORBIDDEN,
-                    "Attendance scan is allowed only from an approved network. Detected IP: "
-                            + service.attendanceIpDebugValue(clientIp)
-            );
         }
 
         String imageData = body.get("imageData");
@@ -67,8 +56,7 @@ public class AttendanceController {
     // Mark Attendance
     @PostMapping("/mark")
     public String markAttendance(
-            @RequestBody Map<String, String> body,
-            HttpServletRequest request
+            @RequestBody Map<String, String> body
     ) {
         if (!securityUtil.hasAnyRole("STUDENT")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
@@ -80,38 +68,13 @@ public class AttendanceController {
         var student = studentService.getStudentByRegNo(regNo)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student profile not found"));
 
-        String ipAddress = extractClientIp(request);
-
         return service.markAttendance(
                 qrData,
                 student.getRegNo(),
                 student.getName(),
                 student.getRoomNo(),
-                student.getFloorNo(),
-                ipAddress
+                student.getFloorNo()
         );
-    }
-
-    private String extractClientIp(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.trim();
-        }
-
-        String standardizedForwarded = request.getHeader("Forwarded");
-        if (standardizedForwarded != null && !standardizedForwarded.isBlank()) {
-            return standardizedForwarded
-                    .replace("for=", "")
-                    .replace("\"", "")
-                    .trim();
-        }
-
-        String realIp = request.getHeader("X-Real-IP");
-        if (realIp != null && !realIp.isBlank()) {
-            return realIp.trim();
-        }
-
-        return request.getRemoteAddr();
     }
 
     @GetMapping("/forum")

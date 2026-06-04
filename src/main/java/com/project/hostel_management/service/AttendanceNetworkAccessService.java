@@ -20,21 +20,22 @@ public class AttendanceNetworkAccessService {
         this.properties = properties;
     }
 
-    public void validateAttendanceMarkingAccess(HttpServletRequest request) {
+    public String validateAttendanceMarkingAccess(HttpServletRequest request) {
+        String clientIp = resolveClientIp(request);
+
         if (!properties.isEnabled()) {
-            return;
+            return clientIp;
         }
 
-        String clientIp = resolveClientIp(request);
         if (properties.isAllowLocalhost() && IpAddressUtil.isLocalhost(clientIp)) {
-            return;
+            return clientIp;
         }
 
         if (IpAddressUtil.isAllowedIpv4(clientIp, properties.getAllowedSubnets())) {
-            return;
+            return clientIp;
         }
 
-        throw new UnauthorizedNetworkAccessException(NETWORK_DENIED_MESSAGE);
+        throw new UnauthorizedNetworkAccessException(NETWORK_DENIED_MESSAGE, clientIp);
     }
 
     public String resolveClientIp(HttpServletRequest request) {

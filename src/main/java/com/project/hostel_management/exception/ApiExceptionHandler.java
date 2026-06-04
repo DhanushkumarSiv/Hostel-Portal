@@ -18,6 +18,7 @@ public class ApiExceptionHandler {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("success", false);
         response.put("message", exception.getMessage());
+        response.put("clientIp", exception.getClientIp());
 
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(response);
     }

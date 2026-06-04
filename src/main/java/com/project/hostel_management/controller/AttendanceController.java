@@ -60,7 +60,7 @@ public class AttendanceController {
 
     // Mark Attendance
     @PostMapping("/mark")
-    public String markAttendance(
+    public Map<String, String> markAttendance(
             @RequestBody Map<String, String> body,
             HttpServletRequest request
     ) {
@@ -68,7 +68,7 @@ public class AttendanceController {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
 
-        attendanceNetworkAccessService.validateAttendanceMarkingAccess(request);
+        String clientIp = attendanceNetworkAccessService.validateAttendanceMarkingAccess(request);
 
         String qrData = body.get("qrData");
         String regNo = securityUtil.getCurrentRegNo();
@@ -76,12 +76,17 @@ public class AttendanceController {
         var student = studentService.getStudentByRegNo(regNo)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student profile not found"));
 
-        return service.markAttendance(
+        String message = service.markAttendance(
                 qrData,
                 student.getRegNo(),
                 student.getName(),
                 student.getRoomNo(),
                 student.getFloorNo()
+        );
+
+        return Map.of(
+                "message", message,
+                "clientIp", clientIp
         );
     }
 

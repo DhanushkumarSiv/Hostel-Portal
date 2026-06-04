@@ -7,7 +7,6 @@ import org.springframework.mock.web.MockHttpServletRequest;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -19,7 +18,7 @@ class AttendanceNetworkAccessServiceTest {
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.setRemoteAddr("152.57.83.236");
 
-        assertDoesNotThrow(() -> service.validateAttendanceMarkingAccess(request));
+        assertEquals("152.57.83.236", service.validateAttendanceMarkingAccess(request));
     }
 
     @Test
@@ -34,6 +33,7 @@ class AttendanceNetworkAccessServiceTest {
         );
 
         assertEquals("Attendance can only be marked from the hostel network.", exception.getMessage());
+        assertEquals("192.168.1.45", exception.getClientIp());
     }
 
     @Test
@@ -44,7 +44,7 @@ class AttendanceNetworkAccessServiceTest {
         request.addHeader("X-Forwarded-For", "152.57.83.236, 127.0.0.1");
 
         assertEquals("152.57.83.236", service.resolveClientIp(request));
-        assertDoesNotThrow(() -> service.validateAttendanceMarkingAccess(request));
+        assertEquals("152.57.83.236", service.validateAttendanceMarkingAccess(request));
     }
 
     @Test

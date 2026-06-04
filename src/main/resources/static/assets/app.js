@@ -294,7 +294,9 @@ async function api(path, options = {}) {
 
   if (!res.ok) {
     const message = payload?.message || payload?.error || payload || `Request failed (${res.status})`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.payload = payload;
+    throw error;
   }
 
   return payload;
@@ -302,6 +304,17 @@ async function api(path, options = {}) {
 
 function setNotice(container, message, kind = "info") {
   container.innerHTML = `<div class="notice ${kind}">${escapeHtml(message)}</div>`;
+}
+
+function attendanceScanNoticeMessage(result, fallback = "Attendance marked") {
+  if (typeof result === "string") {
+    return result;
+  }
+
+  const message = result?.message || fallback;
+  const clientIp = String(result?.clientIp || "").trim();
+
+  return clientIp ? `${message} Detected IP: ${clientIp}` : message;
 }
 
 function roleBadge(role) {
@@ -1604,13 +1617,17 @@ function bindAttendanceForumActions(forum, role) {
       attendanceScanFxState.timerId = setTimeout(async () => {
         try {
           const result = await api("/attendance/mark", { method: "POST", body: { qrData } });
-          const message = typeof result === "string" ? result : "Attendance marked";
+          const message = attendanceScanNoticeMessage(result);
           const isSuccess = /success|already marked/i.test(message);
           setNotice(markNotice, message, isSuccess ? "success" : "error");
           resetScannerUi();
         } catch (err) {
           resetScannerUi();
-          setNotice(markNotice, err.message || "Unable to process attendance scan.", "error");
+          setNotice(
+            markNotice,
+            attendanceScanNoticeMessage(err.payload, err.message || "Unable to process attendance scan."),
+            "error"
+          );
         }
       }, 1400);
     } catch (err) {

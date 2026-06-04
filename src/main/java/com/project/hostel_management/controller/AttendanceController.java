@@ -127,4 +127,17 @@ public class AttendanceController {
         }
         return service.getFacultyTodaySummary(securityUtil.getCurrentRegNo());
     }
+
+    @PostMapping("/manual")
+    public AttendanceSummaryDto manuallyMarkAttendance(@RequestBody Map<String, String> body) {
+        if (!securityUtil.hasAnyRole("FACULTY")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        return service.manuallyMarkAttendance(
+                securityUtil.getCurrentRegNo(),
+                body.get("studentId"),
+                body.get("status")
+        );
+    }
 }

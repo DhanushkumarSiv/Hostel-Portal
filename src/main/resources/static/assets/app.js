@@ -983,7 +983,8 @@ function App() {
         <div className="login-wrap">
           <div className="brand-block">
             <p className="eyebrow">HostelMate</p>
-            <h1>Smart Hostel Experience</h1>
+            <h1>Welcome to Saveetha Engineering College Hostel</h1>
+            <p>Securely access your hostel portal.</p>
 
             <ul className="brand-points">
               <li>Attendance and QR workflow</li>
@@ -1133,7 +1134,7 @@ function renderDashboard(root) {
 
           <article class="dashboard-profile-panel">
             <h3>Login Data</h3>
-            <div class="dashboard-profile-list">
+            <div class="dashboard-profile-list login-data-list">
               ${profileLine("Name", "ADMIN")}
               ${profileLine("Previous Login Date", previousLogin.date)}
               ${profileLine("Previous Login Time", previousLogin.time)}
@@ -1147,6 +1148,8 @@ function renderDashboard(root) {
 
   if (role === "FACULTY") {
     const facultyName = faculty?.name || "Faculty";
+    const facultyRegNo = faculty?.regNo || regNo;
+    const facultyHostel = faculty?.hostelName || faculty?.HostelName || "-";
     const facultyRoom = faculty?.roomNo || faculty?.RoomNo || "-";
     const facultyFloor = faculty?.floorNo || "-";
     const floorInchargeOf = faculty?.floorInchargeOf || faculty?.floorincharge || "-";
@@ -1180,7 +1183,9 @@ function renderDashboard(root) {
           <article class="dashboard-profile-panel">
             <h3>Faculty Profile</h3>
             <div class="dashboard-profile-list">
+              ${profileLine("Reg No", facultyRegNo)}
               ${profileLine("Name", facultyName)}
+              ${profileLine("Hostel", facultyHostel)}
               ${profileLine("Room", facultyRoom)}
               ${profileLine("Floor", facultyFloor)}
               ${profileLine("Floor Incharge Of", floorInchargeOf)}
@@ -1250,31 +1255,85 @@ function renderDashboard(root) {
 
 function renderStudents(root) {
   const role = state.session.role;
+  const canFilterFloor = role === "ADMIN";
   const endpoint = role === "FACULTY" ? "/students/floor/mine" : "/students";
   const buttonLabel = role === "FACULTY" ? "Load Floor Students" : "Load All Students";
 
   root.innerHTML = `
     <div class="actions">
       <button id="loadStudentsBtn">${buttonLabel}</button>
+      ${canFilterFloor ? `
+        <label class="inline-filter" for="studentFloorFilter">
+          Floor
+          <select id="studentFloorFilter" disabled>
+            <option value="ALL">All Floors</option>
+          </select>
+        </label>
+      ` : ""}
     </div>
     <div id="studentsNotice"></div>
     <div id="studentsTable"></div>
   `;
 
   const btn = document.getElementById("loadStudentsBtn");
+  const floorFilter = document.getElementById("studentFloorFilter");
   const notice = document.getElementById("studentsNotice");
   const tableRoot = document.getElementById("studentsTable");
+  const studentsState = {
+    data: [],
+    floor: "ALL"
+  };
+
+  const uniqueFloors = (students) => Array.from(
+    new Set(
+      students
+        .map((student) => String(student?.floorNo || "").trim())
+        .filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+
+  const renderStudentTable = () => {
+    const students = canFilterFloor && studentsState.floor !== "ALL"
+      ? studentsState.data.filter((student) => String(student.floorNo || "").trim() === studentsState.floor)
+      : studentsState.data;
+
+    tableRoot.innerHTML = tableFromStudents(students, role);
+  };
+
+  const syncFloorFilter = () => {
+    if (!canFilterFloor || !floorFilter) return;
+
+    const floors = uniqueFloors(studentsState.data);
+    floorFilter.innerHTML = `<option value="ALL">All Floors</option>${
+      floors.map((floor) => `<option value="${escapeHtml(floor)}">${escapeHtml(floor)}</option>`).join("")
+    }`;
+    floorFilter.disabled = floors.length === 0;
+
+    if (studentsState.floor !== "ALL" && !floors.includes(studentsState.floor)) {
+      studentsState.floor = "ALL";
+      floorFilter.value = "ALL";
+    }
+  };
 
   btn.addEventListener("click", async () => {
     try {
       setNotice(notice, "Loading students...", "info");
       const students = await api(endpoint);
-      setNotice(notice, `Loaded ${students.length} students`, "success");
-      tableRoot.innerHTML = tableFromStudents(students, role);
+      studentsState.data = Array.isArray(students) ? students : [];
+      syncFloorFilter();
+      renderStudentTable();
+      setNotice(notice, `Loaded ${studentsState.data.length} students`, "success");
     } catch (err) {
       setNotice(notice, err.message, "error");
     }
   });
+
+  if (floorFilter) {
+    floorFilter.addEventListener("change", () => {
+      studentsState.floor = floorFilter.value || "ALL";
+      renderStudentTable();
+    });
+  }
 }
 
 function tableFromStudents(students, role) {
@@ -1284,11 +1343,13 @@ function tableFromStudents(students, role) {
     const rows = students
       .map(
         (s) => `<tr>
+      <td>${s.regNo || ""}</td>
       <td>${s.name || ""}</td>
       <td>${s.department || ""}</td>
       <td>${s.year || ""}</td>
       <td>${s.roomNo || s.RoomNo || ""}</td>
       <td>${s.roomType || s.RoomType || ""}</td>
+      <td>${s.floorNo || ""}</td>
     </tr>`
       )
       .join("");
@@ -1296,7 +1357,7 @@ function tableFromStudents(students, role) {
     return `
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Name</th><th>Department</th><th>Year</th><th>Room No</th><th>Room Type</th></tr></thead>
+          <thead><tr><th>RegNo</th><th>Name</th><th>Department</th><th>Year</th><th>Room No</th><th>Room Type</th><th>Floor</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -1539,6 +1600,7 @@ function renderAttendance(root) {
       }
 
       summaryContent.innerHTML = attendanceSummaryMarkup(view, role);
+      bindAttendanceSummaryActions();
     };
 
     const syncFloorFilter = () => {
@@ -1567,6 +1629,42 @@ function renderAttendance(root) {
       } catch (err) {
         setNotice(summaryNotice, err.message, "error");
       }
+    };
+
+    const updateManualAttendance = async (studentId, status, button) => {
+      try {
+        button.disabled = true;
+        setNotice(summaryNotice, `Marking ${status.toLowerCase()}...`, "info");
+        const summary = await api("/attendance/manual", {
+          method: "POST",
+          body: { studentId, status }
+        });
+        summaryState.data = summary;
+        renderSummary();
+        setNotice(summaryNotice, `Marked ${status.toLowerCase()} successfully`, "success");
+      } catch (err) {
+        setNotice(summaryNotice, err.message, "error");
+      } finally {
+        button.disabled = false;
+      }
+    };
+
+    const bindAttendanceSummaryActions = () => {
+      if (role !== "FACULTY") {
+        return;
+      }
+
+      summaryContent.querySelectorAll("[data-attendance-manual]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const studentId = button.dataset.studentId;
+          const status = button.dataset.status;
+          if (!studentId || !status) {
+            setNotice(summaryNotice, "Student details are missing for this row.", "error");
+            return;
+          }
+          updateManualAttendance(studentId, status, button);
+        });
+      });
     };
 
     summaryBtn.addEventListener("click", loadSummary);
@@ -1749,6 +1847,7 @@ function attendanceSummaryMarkup(summary, role) {
   const notTaken = total > 0 && present === 0 && absent === 0 && students.some((s) => s.attendance === "NOT TAKEN");
   const presentAngle = total > 0 ? Math.round((present / total) * 360) : 0;
   const showFloor = role === "ADMIN";
+  const canManualMark = role === "FACULTY";
 
   const rows = students
     .map(
@@ -1758,6 +1857,14 @@ function attendanceSummaryMarkup(summary, role) {
         <td>${s.roomType || ""}</td>
         ${showFloor ? `<td>${s.floorNo || ""}</td>` : ""}
         <td><span class="attendance-status ${attendanceStatusClass(s.attendance)}">${s.attendance || ""}</span></td>
+        ${canManualMark ? `
+          <td>
+            <div class="attendance-manual-actions">
+              <button type="button" data-attendance-manual data-student-id="${escapeHtml(s.studentId || "")}" data-status="PRESENT">Present</button>
+              <button type="button" class="ghost" data-attendance-manual data-student-id="${escapeHtml(s.studentId || "")}" data-status="ABSENT">Absent</button>
+            </div>
+          </td>
+        ` : ""}
       </tr>`
     )
     .join("");
@@ -1788,6 +1895,7 @@ function attendanceSummaryMarkup(summary, role) {
               <th>Room Type</th>
               ${showFloor ? "<th>Floor No</th>" : ""}
               <th>Attendance</th>
+              ${canManualMark ? "<th>Mark</th>" : ""}
             </tr>
           </thead>
           <tbody>${rows}</tbody>

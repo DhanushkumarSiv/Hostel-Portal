@@ -41,6 +41,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Base64;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -254,6 +255,46 @@ public class AttendanceService {
         return buildSummary("FACULTY_SCOPE", students, floorNo);
     }
 
+    @Transactional
+    public AttendanceSummaryDto manuallyMarkAttendance(String facultyLoginId, String studentId, String requestedStatus) {
+        String normalizedStatus = normalize(requestedStatus)
+                .map(value -> value.toUpperCase(Locale.ROOT))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "Attendance status is required"));
+
+        if (!"PRESENT".equals(normalizedStatus) && !"ABSENT".equals(normalizedStatus)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Status must be PRESENT or ABSENT");
+        }
+
+        Faculty faculty = facultyService.findFacultyByLoginId(facultyLoginId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Faculty profile not found"));
+        String facultyFloorNo = resolveFacultyFloor(faculty)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "Faculty floor not assigned"));
+
+        String cleanStudentId = normalize(studentId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "Student register number is required"));
+        Student student = studentRepository.findByRegNo(cleanStudentId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student profile not found"));
+
+        if (!sameFloor(facultyFloorNo, student.getFloorNo())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Faculty can mark attendance only for assigned floor students");
+        }
+
+        LocalDate today = LocalDate.now();
+        Attendance attendance = repository
+                .findFirstByStudentIdIgnoreCaseAndAttendanceDate(student.getRegNo(), today)
+                .orElseGet(Attendance::new);
+
+        attendance.setStudentId(student.getRegNo());
+        attendance.setStudentName(student.getName());
+        attendance.setRoomNumber(student.getRoomNo());
+        attendance.setAttendanceDate(today);
+        attendance.setMarkedTime(LocalDateTime.now());
+        attendance.setStatus(Attendance.Status.valueOf(normalizedStatus));
+        repository.save(attendance);
+
+        return getFacultyTodaySummary(facultyLoginId);
+    }
+
     public AttendanceForumDto getForum(String role, String loginId) {
         ForumParticipant participant = resolveForumParticipant(role, loginId);
         LocalDate today = LocalDate.now();
@@ -323,25 +364,35 @@ public class AttendanceService {
                 })
                 .collect(Collectors.toList());
 
-        Set<String> presentIds = scopedAttendanceRows.stream()
-                .map(Attendance::getStudentId)
-                .filter(id -> id != null && !id.isBlank())
-                .map(id -> id.trim().toUpperCase(Locale.ROOT))
-                .filter(scopedStudentIds::contains)
-                .collect(Collectors.toSet());
+        Map<String, Attendance.Status> statusByStudentId = new HashMap<>();
+        scopedAttendanceRows.forEach(attendance -> {
+            String studentId = attendance.getStudentId();
+            if (studentId != null && !studentId.isBlank()) {
+                statusByStudentId.put(studentId.trim().toUpperCase(Locale.ROOT), attendance.getStatus());
+            }
+        });
 
         boolean attendanceStarted = !scopedAttendanceRows.isEmpty();
 
         List<AttendanceRowDto> rows = students.stream()
                 .map(student -> {
                     String regNo = defaultString(student.getRegNo(), "").toUpperCase(Locale.ROOT);
-                    boolean isPresent = presentIds.contains(regNo);
+                    Attendance.Status status = statusByStudentId.get(regNo);
+                    String attendanceStatus;
+                    if (status == Attendance.Status.ABSENT) {
+                        attendanceStatus = "ABSENT";
+                    } else if (statusByStudentId.containsKey(regNo)) {
+                        attendanceStatus = "PRESENT";
+                    } else {
+                        attendanceStatus = attendanceStarted ? "ABSENT" : "NOT TAKEN";
+                    }
                     return new AttendanceRowDto(
+                            student.getRegNo(),
                             student.getName(),
                             student.getRoomNo(),
                             student.getRoomType(),
                             student.getFloorNo(),
-                            attendanceStarted ? (isPresent ? "PRESENT" : "ABSENT") : "NOT TAKEN"
+                            attendanceStatus
                     );
                 })
                 .collect(Collectors.toList());

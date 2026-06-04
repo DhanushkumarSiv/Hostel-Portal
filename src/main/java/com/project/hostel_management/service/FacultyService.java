@@ -29,7 +29,9 @@ public class FacultyService {
 
     public FacultyProfileDto toProfileDto(Faculty faculty) {
         return new FacultyProfileDto(
+                faculty.getRegNo(),
                 faculty.getName(),
+                faculty.getHostelName(),
                 faculty.getRoomNo(),
                 faculty.getFloorNo(),
                 faculty.getFloorincharge()

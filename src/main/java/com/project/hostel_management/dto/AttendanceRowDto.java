@@ -6,6 +6,7 @@ import lombok.Data;
 @Data
 @AllArgsConstructor
 public class AttendanceRowDto {
+    private String studentId;
     private String name;
     private String roomNo;
     private String roomType;

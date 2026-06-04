@@ -6,7 +6,9 @@ import lombok.Data;
 @Data
 @AllArgsConstructor
 public class FacultyProfileDto {
+    private String regNo;
     private String name;
+    private String hostelName;
     private String roomNo;
     private String floorNo;
     private String floorInchargeOf;

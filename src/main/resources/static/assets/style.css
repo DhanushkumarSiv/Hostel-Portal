@@ -318,6 +318,15 @@ textarea:focus {
   box-shadow: none;
 }
 
+.inline-filter {
+  display: inline-grid;
+  gap: 6px;
+  min-width: 170px;
+  color: var(--ink-soft);
+  font-weight: 700;
+  font-size: 0.86rem;
+}
+
 .menu-item-main {
   display: inline-flex;
   align-items: center;
@@ -1252,6 +1261,17 @@ th {
   color: #95203a;
 }
 
+.attendance-manual-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.attendance-manual-actions button {
+  padding: 7px 10px;
+  font-size: 0.78rem;
+}
+
 .menu-today {
   background: #fff8df;
 }
@@ -1472,6 +1492,10 @@ th {
   border: 1px solid #dce4ef;
   border-radius: 14px;
   padding: 12px;
+}
+
+.login-data-list .profile-line:first-child {
+  grid-column: 1 / -1;
 }
 
 .profile-line {

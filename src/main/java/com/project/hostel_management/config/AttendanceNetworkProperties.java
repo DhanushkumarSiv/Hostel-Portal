@@ -11,7 +11,7 @@ import java.util.List;
 public class AttendanceNetworkProperties {
 
     private boolean enabled = true;
-    private List<String> allowedSubnets = new ArrayList<>(List.of("172.68.0.0-172.68.255.255"));
+    private List<String> allowedSubnets = new ArrayList<>(List.of("150.0.0.0-180.0.0.0"));
     private boolean allowLocalhost = true;
     private boolean trustProxyHeaders = true;
     private List<String> trustedProxySubnets = new ArrayList<>(List.of("127.0.0.1/32"));

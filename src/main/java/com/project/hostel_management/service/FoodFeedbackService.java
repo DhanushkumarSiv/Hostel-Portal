@@ -94,7 +94,7 @@ public class FoodFeedbackService {
                             feedback.getMessage(),
                             feedback.getImageName(),
                             feedback.getCreatedAt(),
-                            null,
+                            feedback.getStudentName(),
                             null,
                             null,
                             canDelete

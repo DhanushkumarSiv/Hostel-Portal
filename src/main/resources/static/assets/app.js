@@ -1852,6 +1852,7 @@ function attendanceSummaryMarkup(summary, role) {
   const rows = students
     .map(
       (s) => `<tr>
+        <td>${escapeHtml(s.studentId || "")}</td>
         <td>${s.name || ""}</td>
         <td>${s.roomNo || ""}</td>
         <td>${s.roomType || ""}</td>
@@ -1890,6 +1891,7 @@ function attendanceSummaryMarkup(summary, role) {
         <table>
           <thead>
             <tr>
+              <th>Reg No</th>
               <th>Name</th>
               <th>Room</th>
               <th>Room Type</th>
@@ -3102,13 +3104,15 @@ function renderFeedback(root) {
       .map((f) => {
         const heading = canViewStudentDetails
           ? `${f.studentName || "Student"} | Floor: ${f.floorNo || "-"} | Hostel: ${f.hostelName || "-"}`
-          : "Posted by Student";
+          : f.studentName || "Student";
+        const postedAt = formatReadableDateTime(f.createdAt);
         const deleteBtn = isStudent && f.canDelete ? `<button class="danger" data-delete-feedback="${f.id}">Delete</button>` : "";
         return `
           <article class="stack-card feedback-card">
-            <h4>${heading}</h4>
+            <h4>${escapeHtml(heading)}</h4>
+            <p class="feedback-posted-meta"><strong>Posted:</strong> ${escapeHtml(postedAt)}</p>
             <p>Rating: ${f.rating || "-"}</p>
-            <p>${f.message || ""}</p>
+            <p>${escapeHtml(f.message || "")}</p>
             ${f.imageName ? `<img class="preview" src="${foodFeedbackImageUrl(f.imageName)}" alt="Feedback image" />` : ""}
             ${deleteBtn ? `<div class="actions">${deleteBtn}</div>` : ""}
           </article>
@@ -3539,12 +3543,16 @@ function keyStatusMarkup(status, label) {
   const holderText = activeHolder
     ? `${activeHolder.studentName || "-"} (${activeHolder.keyHolderRole || "-"})`
     : "No active holder";
+  const holderMobile = String(activeHolder?.mobileNo || "").trim();
   const statusText = isTaken ? `${label} Opened` : `${label} Closed`;
   return `
     <div class="panel-lite">
       <h3>${escapeHtml(label)} Key Status</h3>
       <p><strong class="key-status-text ${isTaken ? "taken" : "closed"}">${escapeHtml(statusText)}</strong></p>
-      <p>${escapeHtml(holderText)}</p>
+      <div class="key-holder-details">
+        <p>${escapeHtml(holderText)}</p>
+        ${holderMobile ? `<small>Mobile: ${escapeHtml(holderMobile)}</small>` : ""}
+      </div>
     </div>
   `;
 }

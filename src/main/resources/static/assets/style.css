@@ -527,6 +527,15 @@ textarea:focus {
   color: #0f8f62;
 }
 
+.key-holder-details {
+  display: grid;
+  gap: 3px;
+}
+
+.key-holder-details small {
+  color: var(--ink-soft);
+}
+
 .attendance-forum {
   display: grid;
   gap: 12px;
@@ -1377,6 +1386,11 @@ th {
 
 .feedback-card .preview {
   max-width: 100%;
+}
+
+.feedback-posted-meta {
+  color: var(--ink-soft);
+  font-size: 0.84rem;
 }
 
 .dashboard-template {
